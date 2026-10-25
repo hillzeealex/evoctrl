@@ -101,8 +101,13 @@ gère que le son.
 - **Barre du haut :** ports, canal, *Test* (demande l'edit buffer et vérifie la réponse, sans rien modifier),
   *Get from Evolver* (remplace le patch de l'éditeur), *Send to Evolver* (envoie tout le patch dans l'edit buffer).
   La pastille donne l'état : gris = inactif, jaune = en attente, vert = OK, rouge = erreur (survol = message complet).
-- **Synth :** toutes les sections. Double-clic = valeur par défaut, Cmd/Ctrl-glisser = réglage fin, molette OK.
-  Le survol d'un potard affiche le numéro de paramètre, la plage brute et le CC éventuel.
+- **Afficheur LED** (barre du haut) : comme sur l'Evolver, il affiche le numéro de programme puis, pendant ~2 s,
+  la valeur du dernier paramètre bougé (souris, automation Live ou potard de l'Evolver), avec son nom et sa valeur
+  en clair à côté.
+- **OSC | MIX, FILTER | AMP, LFO | ENV, MATRIX, FX :** les 128 paramètres répartis par section. Les knobs ont un
+  anneau de LEDs (allumé depuis le centre pour les bipolaires), les listes (formes, sources, destinations…) sont des
+  menus, les on/off des touches à LED, et les enveloppes ont un graphe ADSR. Double-clic = valeur par défaut,
+  Cmd/Ctrl-glisser = réglage fin, molette OK. Le survol donne le numéro de paramètre, la plage brute et le CC.
 - **Sequencer :** grille 4 × 16 (0–100) avec destinations, tempo, division et trigger. Les valeurs > 100 reçues
   (rst / off, codes non documentés) sont conservées et affichées en gris.
 - **Patches :** nom (16 caractères ASCII), lecture/écriture banque + programme (l'écriture demande confirmation),

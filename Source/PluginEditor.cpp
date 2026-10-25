@@ -1,14 +1,26 @@
 #include "PluginEditor.h"
 
+// Art direction: the Evolver desktop itself - black metal box, blue Lexan overlay silkscreened in white
+// (secondary legends in yellow), red LEDs and a red 3-digit LED readout.
 namespace colours
 {
-    const juce::Colour bg { 0xff141619 }, panel { 0xff1e2126 }, outline { 0xff30353d },
-                       text { 0xffd8dce2 }, dim { 0xff8a919b }, accent { 0xffff8c1a };
+    const juce::Colour chassis { 0xff0d0e10 }, blueTop { 0xff1f4596 }, blueBottom { 0xff11295f },
+                       silk { 0xffeef2f8 }, yellow { 0xffffd447 }, led { 0xffff2b1c }, ledOff { 0xff3a0d0a },
+                       recess { 0xff050608 }, key { 0xff26282d };
+    const juce::Colour text = silk, accent = yellow, dim { 0xff9aabcf }, edge { 0xff5170b4 };
 }
 
-constexpr int knobW = 76, knobH = 96, titleH = 26, pad = 8;
+constexpr int knobW = 78, comboW = 132, rowH = 98, envH = 74, titleH = 28, pad = 8;
 
 static juce::Font font (float height, int style = juce::Font::plain) { return juce::Font (juce::FontOptions (height, style)); }
+static juce::Font monoFont (float height) { return juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), height, juce::Font::bold)); }
+
+static juce::Font spaced (float height)
+{
+    auto f = font (height, juce::Font::bold);
+    f.setExtraKerningFactor (0.12f);
+    return f;
+}
 
 static void showAlert (juce::Component* owner, const juce::String& title, const juce::String& message)
 {
@@ -21,154 +33,581 @@ static void enableFineDrag (juce::Slider& s)
     s.setVelocityModeParameters (0.15, 1, 0.0, true, juce::ModifierKeys::commandModifier);
 }
 
+static void drawLed (juce::Graphics& g, juce::Rectangle<float> r, bool on)
+{
+    if (on)
+    {
+        g.setColour (colours::led.withAlpha (0.3f));
+        g.fillEllipse (r.expanded (r.getWidth() * 0.55f));
+    }
+    g.setColour (on ? colours::led : colours::ledOff);
+    g.fillEllipse (r);
+}
+
+// Rubber key, like the Evolver's panel buttons.
+static void drawKey (juce::Graphics& g, juce::Rectangle<float> r, bool over, bool down)
+{
+    g.setColour (juce::Colours::black.withAlpha (0.55f));
+    g.fillRoundedRectangle (r.translated (0.0f, 1.5f), 4.0f);
+    g.setGradientFill (juce::ColourGradient::vertical (colours::key.brighter (over ? 0.3f : 0.15f), r.getY(),
+                                                       colours::key.darker (down ? 0.1f : 0.45f), r.getBottom()));
+    g.fillRoundedRectangle (r, 4.0f);
+    g.setColour (juce::Colours::white.withAlpha (0.07f));
+    g.drawRoundedRectangle (r.reduced (0.5f), 4.0f, 1.0f);
+}
+
+static float textWidth (const juce::Font& f, const juce::String& t)
+{
+    juce::GlyphArrangement ga;
+    ga.addLineOfText (f, t, 0.0f, 0.0f);
+    return ga.getBoundingBox (0, -1, true).getWidth();
+}
+
+// Silkscreened section: thin white frame, title set into a gap of the top rule, the part after "·" in yellow.
+static void drawPanel (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& title)
+{
+    const auto dot = juce::String::fromUTF8 ("·");
+    const auto main = title.upToFirstOccurrenceOf (dot, false, false).trim().toUpperCase();
+    const auto sub = title.fromFirstOccurrenceOf (dot, false, false).trim().toUpperCase();
+    const auto f = spaced (12.0f);
+    const float mainW = textWidth (f, main), subW = sub.isEmpty() ? 0.0f : textWidth (f, sub) + 10.0f;
+
+    const auto frame = r.reduced (1.0f).withTrimmedTop ((float) titleH / 2.0f);
+    g.setColour (juce::Colours::black.withAlpha (0.13f));
+    g.fillRoundedRectangle (frame, 6.0f);
+
+    const float x0 = frame.getX(), y0 = frame.getY(), x1 = frame.getRight(), y1 = frame.getBottom(), cr = 6.0f;
+    const float tx = x0 + 16.0f;
+    juce::Path p;
+    p.startNewSubPath (tx + mainW + subW + 6.0f, y0);
+    p.lineTo (x1 - cr, y0);  p.quadraticTo (x1, y0, x1, y0 + cr);
+    p.lineTo (x1, y1 - cr);  p.quadraticTo (x1, y1, x1 - cr, y1);
+    p.lineTo (x0 + cr, y1);  p.quadraticTo (x0, y1, x0, y1 - cr);
+    p.lineTo (x0, y0 + cr);  p.quadraticTo (x0, y0, x0 + cr, y0);
+    p.lineTo (tx - 6.0f, y0);
+    g.setColour (colours::silk.withAlpha (0.55f));
+    g.strokePath (p, juce::PathStrokeType (1.2f));
+
+    g.setFont (f);
+    g.setColour (colours::silk);
+    g.drawText (main, juce::Rectangle<float> (tx, r.getY(), mainW + 4.0f, (float) titleH), juce::Justification::centredLeft, false);
+    if (sub.isNotEmpty())
+    {
+        g.setColour (colours::yellow);
+        g.drawText (sub, juce::Rectangle<float> (tx + mainW + 10.0f, r.getY(), subW, (float) titleH), juce::Justification::centredLeft, false);
+    }
+}
+
+// 7-segment encoding, bit 0..6 = segments a..g.
+static int segmentsFor (juce::juce_wchar c)
+{
+    switch (juce::CharacterFunctions::toUpperCase (c))
+    {
+        case '0': case 'O': return 0x3f;
+        case '1': return 0x06;
+        case '2': return 0x5b;
+        case '3': return 0x4f;
+        case '4': return 0x66;
+        case '5': return 0x6d;
+        case '6': return 0x7d;
+        case '7': return 0x07;
+        case '8': return 0x7f;
+        case '9': return 0x6f;
+        case '-': return 0x40;
+        case 'F': return 0x71;
+        case 'P': return 0x73;
+        default:  return 0;
+    }
+}
+
+// The Evolver's red 3-character LED, unlit segments faintly visible like the real thing.
+static void drawSevenSegment (juce::Graphics& g, juce::Rectangle<float> area, juce::String text)
+{
+    text = text.substring (juce::jmax (0, text.length() - 3)).paddedLeft (' ', 3);
+    const float cell = area.getWidth() / 3.0f, w = cell * 0.74f, h = area.getHeight(), t = w * 0.19f;
+    juce::Path lit, unlit;
+
+    for (int d = 0; d < 3; ++d)
+    {
+        const float x = area.getX() + (float) d * cell + (cell - w) / 2.0f, y = area.getY();
+        const juce::Rectangle<float> seg[7] {
+            { x + t * 0.5f, y, w - t, t },                          // a
+            { x + w - t, y + t * 0.5f, t, h / 2.0f - t * 0.5f },    // b
+            { x + w - t, y + h / 2.0f, t, h / 2.0f - t * 0.5f },    // c
+            { x + t * 0.5f, y + h - t, w - t, t },                  // d
+            { x, y + h / 2.0f, t, h / 2.0f - t * 0.5f },            // e
+            { x, y + t * 0.5f, t, h / 2.0f - t * 0.5f },            // f
+            { x + t * 0.5f, y + (h - t) / 2.0f, w - t, t },         // g
+        };
+        const int bits = segmentsFor (text[d]);
+        for (int s = 0; s < 7; ++s)
+            ((bits >> s) & 1 ? lit : unlit).addRoundedRectangle (seg[s].reduced (0.8f), t * 0.4f);
+    }
+
+    const auto c = area.getCentre();
+    const auto italic = juce::AffineTransform::translation (-c.x, -c.y).followedBy (juce::AffineTransform::shear (-0.1f, 0.0f)).translated (c.x, c.y);
+    lit.applyTransform (italic);
+    unlit.applyTransform (italic);
+    g.setColour (colours::ledOff.withAlpha (0.55f));
+    g.fillPath (unlit);
+    g.setColour (colours::led.withAlpha (0.25f));
+    g.strokePath (lit, juce::PathStrokeType (4.0f));
+    g.setColour (colours::led);
+    g.fillPath (lit);
+}
+
+static void drawScrew (juce::Graphics& g, juce::Point<float> c)
+{
+    const auto r = juce::Rectangle<float> (10.0f, 10.0f).withCentre (c);
+    g.setGradientFill ({ juce::Colour (0xff9a9da3), r.getX(), r.getY(), juce::Colour (0xff2a2c30), r.getRight(), r.getBottom(), false });
+    g.fillEllipse (r);
+    g.setColour (juce::Colour (0xff15161a));
+    g.drawLine ({ c.translated (-3.0f, -1.2f), c.translated (3.0f, 1.2f) }, 1.5f);
+}
+
+enum class Widget { Knob, Menu, Switch };
+
+static Widget widgetFor (evo::Disp d)
+{
+    if (d == evo::Disp::OnOff)
+        return Widget::Switch;
+    return d >= evo::Disp::LfoShape ? Widget::Menu : Widget::Knob; // Disp lists every named-value type from LfoShape on
+}
+
+// One item per raw value: ComboBoxParameterAttachment maps item index linearly onto the parameter range.
+static void fillMenu (juce::ComboBox& box, const evo::Param& p)
+{
+    for (int v = p.min; v <= p.max; ++v)
+        box.addItem (evo::valueToText (p, v), v - p.min + 1);
+}
+
+static juce::String tooltipFor (const evo::Param& p)
+{
+    return juce::String (p.name) + "  -  Evolver param " + juce::String (p.index) + ", raw " + juce::String (p.min)
+         + ".." + juce::String (p.max) + (p.cc >= 0 ? ", CC " + juce::String (p.cc) : juce::String());
+}
+
+// What the hardware LED would show: signed for bipolar params, the raw number otherwise.
+static juce::String ledValue (const evo::Param& p, int v)
+{
+    if (p.disp == evo::Disp::Bipolar99) return juce::String (v - 99);
+    if (p.disp == evo::Disp::Fine50)    return juce::String (v - 50);
+    if (p.disp == evo::Disp::KeyXpose)  return v == 0 ? juce::String ("OFF") : juce::String (v - 37);
+    return juce::String (v);
+}
+
 //==============================================================================
 EvoLookAndFeel::EvoLookAndFeel()
 {
-    setColourScheme ({ colours::bg, colours::panel, colours::panel, colours::outline, colours::text,
-                       colours::accent, juce::Colours::black, colours::accent, colours::text });
-    setColour (juce::ResizableWindow::backgroundColourId, colours::bg);
-    setColour (juce::Slider::rotarySliderFillColourId, colours::accent);
-    setColour (juce::Slider::rotarySliderOutlineColourId, colours::outline);
-    setColour (juce::Slider::trackColourId, colours::accent);
+    setColourScheme ({ colours::blueBottom, colours::key, colours::recess, colours::edge, colours::silk,
+                       colours::led, colours::silk, colours::blueTop, colours::silk });
+    setColour (juce::ResizableWindow::backgroundColourId, colours::chassis);
+    setColour (juce::Label::textColourId, colours::silk);
+    setColour (juce::Slider::rotarySliderFillColourId, colours::led);
+    setColour (juce::Slider::rotarySliderOutlineColourId, colours::ledOff);
+    setColour (juce::Slider::trackColourId, colours::led);
+    setColour (juce::Slider::backgroundColourId, colours::recess);
     setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-    setColour (juce::Slider::textBoxTextColourId, colours::text);
-    setColour (juce::TextEditor::backgroundColourId, colours::bg.darker (0.3f));
-    setColour (juce::TextEditor::outlineColourId, colours::outline);
-    setColour (juce::ListBox::backgroundColourId, colours::bg.darker (0.3f));
-    setColour (juce::GroupComponent::outlineColourId, colours::outline);
-    setColour (juce::GroupComponent::textColourId, colours::accent);
-    setColour (juce::TooltipWindow::backgroundColourId, colours::panel.brighter (0.1f));
+    setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
+    setColour (juce::Slider::textBoxTextColourId, colours::yellow);
+    setColour (juce::ComboBox::backgroundColourId, colours::recess);
+    setColour (juce::ComboBox::outlineColourId, juce::Colours::black);
+    setColour (juce::ComboBox::textColourId, colours::led);
+    setColour (juce::ComboBox::arrowColourId, colours::led);
+    setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xff0b0c0f));
+    setColour (juce::PopupMenu::textColourId, colours::silk);
+    setColour (juce::PopupMenu::highlightedBackgroundColourId, colours::blueTop);
+    setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
+    setColour (juce::TextButton::buttonColourId, colours::key);
+    setColour (juce::TextButton::textColourOffId, colours::silk);
+    setColour (juce::TextButton::textColourOnId, colours::silk);
+    setColour (juce::TextEditor::backgroundColourId, colours::recess.withAlpha (0.85f));
+    setColour (juce::TextEditor::textColourId, colours::silk);
+    setColour (juce::TextEditor::outlineColourId, juce::Colours::black);
+    setColour (juce::TextEditor::focusedOutlineColourId, colours::yellow.withAlpha (0.6f));
+    setColour (juce::ListBox::backgroundColourId, colours::recess.withAlpha (0.6f));
+    setColour (juce::GroupComponent::outlineColourId, colours::silk.withAlpha (0.45f));
+    setColour (juce::GroupComponent::textColourId, colours::yellow);
+    setColour (juce::ToggleButton::textColourId, colours::silk);
+    setColour (juce::ToggleButton::tickColourId, colours::yellow);
+    setColour (juce::TooltipWindow::backgroundColourId, juce::Colour (0xff0b0c0f));
+    setColour (juce::TooltipWindow::textColourId, colours::silk);
+    setColour (juce::TooltipWindow::outlineColourId, colours::edge);
+    setColour (juce::AlertWindow::backgroundColourId, juce::Colour (0xff15181d));
+    setColour (juce::AlertWindow::textColourId, colours::silk);
 }
 
 void EvoLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float start, float end, juce::Slider& s)
 {
-    const auto bounds = juce::Rectangle<int> (x, y, w, h).toFloat().reduced (3.0f);
-    const float lw = 3.0f, r = juce::jmin (bounds.getWidth(), bounds.getHeight()) / 2.0f - lw;
+    const auto bounds = juce::Rectangle<int> (x, y, w, h).toFloat();
+    const float r = juce::jmin (bounds.getWidth(), bounds.getHeight()) / 2.0f - 2.0f;
     const auto c = bounds.getCentre();
     const float angle = start + pos * (end - start);
-    const float origin = s.getProperties()["bipolar"] ? (start + end) / 2.0f : start; // bipolar params fill from 12 o'clock
+    const float origin = s.getProperties()["bipolar"] ? (start + end) / 2.0f : start; // bipolar params light from 12 o'clock
 
-    juce::Path track, value;
-    track.addCentredArc (c.x, c.y, r, r, 0.0f, start, end, true);
-    value.addCentredArc (c.x, c.y, r, r, 0.0f, juce::jmin (origin, angle), juce::jmax (origin, angle), true);
+    // Ring of red LEDs, lit from the origin to the value.
+    constexpr int numLeds = 19;
+    const float ledR = juce::jmax (1.4f, r * 0.075f), half = (end - start) / (float) (numLeds - 1) / 2.0f;
+    for (int i = 0; i < numLeds; ++i)
+    {
+        const float a = start + (end - start) * (float) i / (float) (numLeds - 1);
+        const bool lit = a >= juce::jmin (origin, angle) - half && a <= juce::jmax (origin, angle) + half;
+        drawLed (g, juce::Rectangle<float> (ledR * 2.0f, ledR * 2.0f).withCentre (c.getPointOnCircumference (r - ledR, a)), lit);
+    }
 
-    const juce::PathStrokeType stroke (lw, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
-    g.setColour (s.findColour (juce::Slider::rotarySliderOutlineColourId));
-    g.strokePath (track, stroke);
-    g.setColour (s.findColour (juce::Slider::rotarySliderFillColourId));
-    g.strokePath (value, stroke);
+    // Black knurled knob, white pointer.
+    const float kr = r - ledR * 2.0f - 4.0f;
+    const auto body = juce::Rectangle<float> (kr * 2.0f, kr * 2.0f).withCentre (c);
+    g.setColour (juce::Colours::black.withAlpha (0.5f));
+    g.fillEllipse (body.translated (0.0f, 2.0f).expanded (1.0f));
+    g.setColour (juce::Colour (0xff17181b));
+    g.fillEllipse (body);
+    juce::Path ridges;
+    for (int i = 0; i < 28; ++i)
+    {
+        const float a = juce::MathConstants<float>::twoPi * (float) i / 28.0f;
+        ridges.addLineSegment ({ c.getPointOnCircumference (kr * 0.8f, a), c.getPointOnCircumference (kr, a) }, 1.0f);
+    }
+    g.setColour (juce::Colour (0xff36383d));
+    g.fillPath (ridges);
+    const auto cap = body.reduced (kr * 0.22f);
+    g.setGradientFill ({ juce::Colour (0xff42454c), cap.getX(), cap.getY(), juce::Colour (0xff121316), cap.getRight(), cap.getBottom(), false });
+    g.fillEllipse (cap);
+    g.setColour (juce::Colours::white.withAlpha (0.08f));
+    g.drawEllipse (cap, 1.0f);
+    g.setColour (colours::silk);
+    g.drawLine ({ c.getPointOnCircumference (kr * 0.25f, angle), c.getPointOnCircumference (kr * 0.96f, angle) }, 2.2f);
+}
 
-    const float kr = r - lw * 2.0f;
-    g.setColour (colours::panel.brighter (0.18f));
-    g.fillEllipse (juce::Rectangle<float> (kr * 2.0f, kr * 2.0f).withCentre (c));
-    g.setColour (colours::text);
-    g.drawLine ({ c.getPointOnCircumference (kr * 0.35f, angle), c.getPointOnCircumference (kr, angle) }, 2.0f);
+void EvoLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
+{
+    const auto r = b.getLocalBounds().toFloat().reduced (1.0f, 2.0f);
+    drawKey (g, r, over, down);
+    if (b.getClickingTogglesState()) // parameter switch: key with a red LED
+        drawLed (g, juce::Rectangle<float> (8.0f, 8.0f).withCentre (r.getCentre()), b.getToggleState());
+}
+
+void EvoLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox& box)
+{
+    // Recessed LED window.
+    const auto r = juce::Rectangle<float> ((float) w, (float) h).reduced (0.5f);
+    g.setColour (colours::recess);
+    g.fillRoundedRectangle (r, 3.0f);
+    g.setColour (juce::Colours::white.withAlpha (box.isMouseOver (true) ? 0.28f : 0.1f));
+    g.drawRoundedRectangle (r, 3.0f, 1.0f);
+    juce::Path arrow;
+    const float ax = (float) w - 13.0f, ay = (float) h / 2.0f;
+    arrow.addTriangle (ax - 4.0f, ay - 2.0f, ax + 4.0f, ay - 2.0f, ax, ay + 3.0f);
+    g.setColour (colours::led.withAlpha (box.isEnabled() ? 0.9f : 0.3f));
+    g.fillPath (arrow);
+}
+
+void EvoLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float minPos, float maxPos,
+                                       juce::Slider::SliderStyle style, juce::Slider& s)
+{
+    if (style != juce::Slider::LinearBarVertical)
+        return LookAndFeel_V4::drawLinearSlider (g, x, y, w, h, pos, minPos, maxPos, style, s);
+
+    // LED bar graph (sequencer steps).
+    const auto r = juce::Rectangle<int> (x, y, w, h).toFloat();
+    g.setColour (colours::recess);
+    g.fillRoundedRectangle (r, 3.0f);
+    const int n = juce::jmax (4, h / 6);
+    const float segH = (r.getHeight() - 4.0f) / (float) n, level = (r.getBottom() - pos) / r.getHeight();
+    const auto lit = s.findColour (juce::Slider::trackColourId);
+    for (int i = 0; i < n; ++i)
+    {
+        const auto seg = juce::Rectangle<float> (r.getX() + 3.0f, r.getBottom() - 2.0f - (float) (i + 1) * segH, r.getWidth() - 6.0f, segH).reduced (0.0f, 1.0f);
+        g.setColour (((float) i + 0.5f) / (float) n <= level ? lit : colours::ledOff.withAlpha (0.6f));
+        g.fillRect (seg);
+    }
+}
+
+void EvoLookAndFeel::drawTabButton (juce::TabBarButton& b, juce::Graphics& g, bool over, bool down)
+{
+    const auto r = b.getActiveArea().toFloat().reduced (3.0f, 5.0f);
+    const bool front = b.isFrontTab();
+    drawKey (g, r, over, down);
+    drawLed (g, juce::Rectangle<float> (7.0f, 7.0f).withCentre ({ r.getX() + 13.0f, r.getCentreY() }), front);
+    g.setColour (colours::silk.withAlpha (front ? 1.0f : over ? 0.85f : 0.55f));
+    g.setFont (spaced (11.5f));
+    g.drawText (b.getButtonText(), r.withTrimmedLeft (20.0f), juce::Justification::centred);
+}
+
+int EvoLookAndFeel::getTabButtonBestWidth (juce::TabBarButton& b, int)
+{
+    return juce::roundToInt (textWidth (spaced (11.5f), b.getButtonText())) + 52;
+}
+
+juce::Font EvoLookAndFeel::getComboBoxFont (juce::ComboBox&) { return monoFont (12.5f); }
+juce::Font EvoLookAndFeel::getPopupMenuFont()                { return font (14.0f); }
+
+//==============================================================================
+EnvelopeView::EnvelopeView (EvoCtrlProcessor& p, int attackIndex) : proc (p), first (attackIndex)
+{
+    timerCallback();
+    startTimerHz (20);
+}
+
+void EnvelopeView::timerCallback()
+{
+    std::array<int, 4> now {};
+    for (size_t i = 0; i < 4; ++i)
+        now[i] = proc.param (first + (int) i).get();
+    if (now != shown)
+    {
+        shown = now;
+        repaint();
+    }
+}
+
+void EnvelopeView::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced (0.0f, 4.0f);
+    g.setColour (colours::recess);
+    g.fillRoundedRectangle (r, 4.0f);
+    g.setColour (colours::blueTop.withAlpha (0.3f));
+    for (int i = 1; i < 8; ++i)
+        g.drawVerticalLine (juce::roundToInt (r.getX() + r.getWidth() * (float) i / 8.0f), r.getY(), r.getBottom());
+    for (int i = 1; i < 4; ++i)
+        g.drawHorizontalLine (juce::roundToInt (r.getY() + r.getHeight() * (float) i / 4.0f), r.getX(), r.getRight());
+
+    const auto area = r.reduced (10.0f);
+    const auto frac = [this] (size_t i)
+    {
+        const auto& p = evo::params[(size_t) first + i];
+        return (float) (shown[i] - p.min) / (float) (p.max - p.min);
+    };
+    const float seg = area.getWidth() / 4.0f, top = area.getY(), bottom = area.getBottom();
+    const float sustainY = bottom - frac (2) * area.getHeight();
+
+    // Attack, decay and release take up to a quarter of the width each; the sustain plateau a fixed quarter.
+    float x = area.getX();
+    juce::Path env;
+    env.startNewSubPath (x, bottom);
+    x += frac (0) * seg; env.lineTo (x, top);
+    x += frac (1) * seg; env.lineTo (x, sustainY);
+    x += seg;            env.lineTo (x, sustainY);
+    x += frac (3) * seg; env.lineTo (x, bottom);
+
+    auto fill = env;
+    fill.closeSubPath();
+    g.setGradientFill (juce::ColourGradient::vertical (colours::led.withAlpha (0.3f), top, colours::led.withAlpha (0.0f), bottom));
+    g.fillPath (fill);
+    g.setColour (colours::led.withAlpha (0.25f));
+    g.strokePath (env, juce::PathStrokeType (6.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.setColour (colours::led);
+    g.strokePath (env, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 }
 
 //==============================================================================
-SectionPanel::SectionPanel (EvoCtrlProcessor& proc, evo::Group group) : title (evo::groupName (group))
+int Panel::Row::width() const
 {
-    for (const auto& p : evo::params)
+    if (envelope != nullptr)
+        return 4 * knobW;
+    int w = 0;
+    for (const auto& c : controls)
+        w += c->width;
+    return w;
+}
+
+Panel::Panel (EvoCtrlProcessor& proc, const layout::Panel& def) : title (juce::String::fromUTF8 (def.title))
+{
+    for (const auto& rowDef : def.rows)
     {
-        if (p.group != group)
+        Row row;
+        if (rowDef.adsr >= 0)
+            addAndMakeVisible (*(row.envelope = std::make_unique<EnvelopeView> (proc, rowDef.adsr)));
+
+        for (const auto& c : rowDef.ctls)
+        {
+            const auto& p = evo::params[(size_t) c.index];
+            auto& param = proc.param (c.index);
+            auto ctl = std::make_unique<Control>();
+
+            switch (widgetFor (p.disp))
+            {
+                case Widget::Menu:
+                {
+                    auto box = std::make_unique<juce::ComboBox>();
+                    fillMenu (*box, p);
+                    box->setTooltip (tooltipFor (p));
+                    ctl->attachment = std::make_shared<juce::ComboBoxParameterAttachment> (param, *box);
+                    ctl->width = comboW;
+                    ctl->widget = std::move (box);
+                    break;
+                }
+                case Widget::Switch:
+                {
+                    auto b = std::make_unique<juce::TextButton>();
+                    b->setClickingTogglesState (true);
+                    b->setTooltip (tooltipFor (p));
+                    ctl->attachment = std::make_shared<juce::ButtonParameterAttachment> (param, *b);
+                    ctl->width = knobW;
+                    ctl->widget = std::move (b);
+                    break;
+                }
+                case Widget::Knob:
+                {
+                    auto s = std::make_unique<juce::Slider> (juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::TextBoxBelow);
+                    s->setTextBoxStyle (juce::Slider::TextBoxBelow, false, knobW - 4, 18);
+                    s->setTooltip (tooltipFor (p) + "\nDouble-click: default   Cmd/Ctrl-drag: fine");
+                    s->getProperties().set ("bipolar", p.disp == evo::Disp::Bipolar99 || p.disp == evo::Disp::Fine50
+                                                           || p.disp == evo::Disp::KeyXpose);
+                    enableFineDrag (*s);
+                    // Also sets the value text (names, cents...) and double-click = default from the host parameter.
+                    ctl->attachment = std::make_shared<juce::SliderParameterAttachment> (param, *s);
+                    ctl->width = knobW;
+                    ctl->widget = std::move (s);
+                    break;
+                }
+            }
+
+            ctl->label.setText (juce::String (c.label).toUpperCase(), juce::dontSendNotification);
+            ctl->label.setFont (spaced (10.5f));
+            ctl->label.setJustificationType (juce::Justification::centred);
+            ctl->label.setMinimumHorizontalScale (0.6f);
+            ctl->label.setInterceptsMouseClicks (false, false);
+            addAndMakeVisible (*ctl->widget);
+            addAndMakeVisible (ctl->label);
+            row.controls.push_back (std::move (ctl));
+        }
+        rows.push_back (std::move (row));
+    }
+}
+
+int Panel::preferredWidth() const
+{
+    int w = 160;
+    for (const auto& row : rows)
+        w = juce::jmax (w, row.width());
+    return w + 2 * pad;
+}
+
+int Panel::preferredHeight() const
+{
+    int h = titleH + pad;
+    for (const auto& row : rows)
+        h += row.envelope != nullptr ? envH : rowH;
+    return h;
+}
+
+void Panel::paint (juce::Graphics& g)
+{
+    drawPanel (g, getLocalBounds().toFloat(), title);
+}
+
+void Panel::resized()
+{
+    // Extra height goes to the envelope graphs if any, otherwise it spaces the rows out evenly.
+    const auto numEnv = (int) std::count_if (rows.begin(), rows.end(), [] (const Row& r) { return r.envelope != nullptr; });
+    const int extra = juce::jmax (0, getHeight() - preferredHeight());
+    const int gap = numEnv == 0 ? extra / ((int) rows.size() + 1) : 0;
+    int y = titleH;
+
+    for (auto& row : rows)
+    {
+        y += gap;
+        if (row.envelope != nullptr)
+        {
+            const int h = envH + extra / numEnv;
+            row.envelope->setBounds (pad * 2, y, getWidth() - pad * 4, h);
+            y += h;
             continue;
+        }
 
-        auto k = std::make_unique<Knob>();
-        k->label.setText (p.name, juce::dontSendNotification);
-        k->label.setJustificationType (juce::Justification::centred);
-        k->label.setFont (font (12.0f));
-        k->label.setMinimumHorizontalScale (0.7f);
-        k->label.setInterceptsMouseClicks (false, false);
-
-        k->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, knobW - 4, 18);
-        // Also sets the value text (names, cents...) and double-click = default from the host parameter.
-        k->attachment = std::make_unique<juce::SliderParameterAttachment> (proc.param (p.index), k->slider);
-        enableFineDrag (k->slider);
-        k->slider.getProperties().set ("bipolar", p.disp == evo::Disp::Bipolar99 || p.disp == evo::Disp::Fine50
-                                                      || p.disp == evo::Disp::KeyXpose);
-        k->slider.setTooltip (juce::String (p.name) + "  -  Evolver param " + juce::String (p.index)
-                              + ", raw " + juce::String (p.min) + ".." + juce::String (p.max)
-                              + (p.cc >= 0 ? ", CC " + juce::String (p.cc) : juce::String())
-                              + "\nDouble-click: default   Cmd/Ctrl-drag: fine");
-
-        addAndMakeVisible (k->label);
-        addAndMakeVisible (k->slider);
-        knobs.push_back (std::move (k));
-    }
-}
-
-int SectionPanel::preferredWidth (int maxCols) const
-{
-    return juce::jmin (maxCols, (int) knobs.size()) * knobW + 2 * pad;
-}
-
-int SectionPanel::preferredHeight (int width) const
-{
-    const int cols = juce::jmax (1, (width - 2 * pad) / knobW);
-    const int rows = ((int) knobs.size() + cols - 1) / cols;
-    return titleH + rows * knobH + pad;
-}
-
-void SectionPanel::paint (juce::Graphics& g)
-{
-    g.setColour (colours::panel);
-    g.fillRoundedRectangle (getLocalBounds().toFloat(), 6.0f);
-    g.setColour (colours::accent);
-    g.setFont (font (13.0f, juce::Font::bold));
-    g.drawText (title.toUpperCase(), getLocalBounds().reduced (pad, 0).removeFromTop (titleH), juce::Justification::centredLeft);
-}
-
-void SectionPanel::resized()
-{
-    const int cols = juce::jmax (1, (getWidth() - 2 * pad) / knobW);
-    for (size_t i = 0; i < knobs.size(); ++i)
-    {
-        auto cell = juce::Rectangle<int> (pad + (int) (i % (size_t) cols) * knobW, titleH + (int) (i / (size_t) cols) * knobH, knobW, knobH);
-        knobs[i]->label.setBounds (cell.removeFromTop (16));
-        knobs[i]->slider.setBounds (cell.reduced (2, 0));
+        int x = (getWidth() - row.width()) / 2;
+        for (auto& c : row.controls)
+        {
+            auto slot = juce::Rectangle<int> (x, y, c->width, rowH);
+            x += c->width;
+            c->label.setBounds (slot.removeFromBottom (20).withTrimmedBottom (4));
+            if (dynamic_cast<juce::Slider*> (c->widget.get()) != nullptr)
+            {
+                c->widget->setBounds (slot.reduced (2, 0));
+                continue;
+            }
+            // Menus and switches sit at knob-centre height so a row reads as one line.
+            const int w = dynamic_cast<juce::ComboBox*> (c->widget.get()) != nullptr ? c->width - 10 : 46;
+            c->widget->setBounds (slot.getCentreX() - w / 2, slot.getY() + (slot.getHeight() - 18) / 2 - 13, w, 26);
+        }
+        y += rowH;
     }
 }
 
 //==============================================================================
-SynthPage::SynthPage (EvoCtrlProcessor& proc)
+SynthTab::SynthTab (EvoCtrlProcessor& proc, const layout::Tab& tab)
 {
-    for (int g = 0; g < (int) evo::Group::NumGroups; ++g)
-        if ((evo::Group) g != evo::Group::Seq) // lives on the Sequencer tab
-            content.addAndMakeVisible (*sections.emplace_back (std::make_unique<SectionPanel> (proc, (evo::Group) g)));
-
+    for (const auto& columnDef : tab.columns)
+    {
+        auto& column = columns.emplace_back();
+        for (const auto& panelDef : columnDef)
+            content.addAndMakeVisible (*column.emplace_back (std::make_unique<Panel> (proc, panelDef)));
+    }
     viewport.setViewedComponent (&content, false);
-    viewport.setScrollBarsShown (true, false);
     addAndMakeVisible (viewport);
 }
 
-void SynthPage::resized()
+void SynthTab::resized()
 {
     viewport.setBounds (getLocalBounds());
-    const int width = viewport.getWidth() - viewport.getScrollBarThickness();
 
-    // Flow layout: sections left to right, wrapping when the row is full.
-    int x = pad, y = pad, rowH = 0;
-    for (auto& s : sections)
+    // Natural size first, then columns and panels stretch to fill the page like a hardware front panel.
+    std::vector<int> widths;
+    int naturalW = pad, naturalH = 0;
+    for (const auto& column : columns)
     {
-        const int w = juce::jmin (s->preferredWidth (6), width - 2 * pad);
-        if (x > pad && x + w > width - pad)
+        int w = 0, h = -pad;
+        for (const auto& p : column)
         {
-            x = pad;
-            y += rowH + pad;
-            rowH = 0;
+            w = juce::jmax (w, p->preferredWidth());
+            h += p->preferredHeight() + pad;
         }
-        const int h = s->preferredHeight (w);
-        s->setBounds (x, y, w, h);
-        x += w + pad;
-        rowH = juce::jmax (rowH, h);
+        widths.push_back (w);
+        naturalW += w + pad;
+        naturalH = juce::jmax (naturalH, h);
     }
-    content.setSize (width, y + rowH + pad);
+
+    const int W = juce::jmax (naturalW, getWidth()), H = juce::jmax (naturalH + 2 * pad, getHeight());
+    const int gaps = pad * ((int) columns.size() + 1);
+    const double sx = (double) (W - gaps) / (double) (naturalW - gaps);
+
+    int x = pad;
+    for (size_t c = 0; c < columns.size(); ++c)
+    {
+        auto& column = columns[c];
+        const int w = c + 1 == columns.size() ? W - pad - x : juce::roundToInt (widths[c] * sx);
+        int prefSum = 0;
+        for (const auto& p : column)
+            prefSum += p->preferredHeight();
+        const int available = H - 2 * pad - pad * ((int) column.size() - 1);
+
+        int y = pad;
+        for (size_t i = 0; i < column.size(); ++i)
+        {
+            const int h = i + 1 == column.size() ? H - pad - y
+                                                 : juce::roundToInt ((double) column[i]->preferredHeight() * available / prefSum);
+            column[i]->setBounds (x, y, w, h);
+            y += h + pad;
+        }
+        x += w + pad;
+    }
+    content.setSize (W, H);
 }
 
 //==============================================================================
-SequencerPage::SequencerPage (EvoCtrlProcessor& p) : proc (p), settings (p, evo::Group::Seq)
+SequencerPage::SequencerPage (EvoCtrlProcessor& p) : proc (p), settings (p, layout::seqSettings())
 {
     addAndMakeVisible (settings);
+
+    for (size_t row = 0; row < dests.size(); ++row)
+    {
+        const auto& param = evo::params[(size_t) layout::seqDests[row]];
+        fillMenu (dests[row], param);
+        dests[row].setTooltip (tooltipFor (param));
+        destAttachments[row] = std::make_unique<juce::ComboBoxParameterAttachment> (proc.param (param.index), dests[row]);
+        addAndMakeVisible (dests[row]);
+    }
 
     for (int i = 0; i < evo::numSeqSteps; ++i)
     {
@@ -176,13 +615,14 @@ SequencerPage::SequencerPage (EvoCtrlProcessor& p) : proc (p), settings (p, evo:
         s.setSliderStyle (juce::Slider::LinearBarVertical);
         s.setRange (0, evo::seqStepMax, 1);
         s.setDoubleClickReturnValue (true, 0);
+        s.setColour (juce::Slider::textBoxTextColourId, colours::silk);
         enableFineDrag (s);
         s.onValueChange = [this, i] { proc.setSeqStep (i, (int) steps[(size_t) i].getValue()); };
         addAndMakeVisible (s);
     }
 
     help.setText ("Steps 0-100 (24 = one octave on an oscillator destination). Values above 100 (rst / off) "
-                  "received from the Evolver are kept and shown grey; dragging such a step overwrites it.",
+                  "received from the Evolver are kept and shown in white; dragging such a step overwrites it.",
                   juce::dontSendNotification);
     help.setColour (juce::Label::textColourId, colours::dim);
     addAndMakeVisible (help);
@@ -197,7 +637,7 @@ void SequencerPage::refresh()
         const int v = proc.getSeqStep (i);
         const bool special = v > evo::seqStepMax;
         s.setValue (juce::jmin (v, evo::seqStepMax), juce::dontSendNotification); // no notification = no echo
-        s.setColour (juce::Slider::trackColourId, special ? colours::dim : colours::accent);
+        s.setColour (juce::Slider::trackColourId, special ? colours::silk.withAlpha (0.6f) : colours::led);
         s.setTooltip ("Seq " + juce::String (i / 16 + 1) + " step " + juce::String (i % 16 + 1)
                       + (special ? "  -  raw " + juce::String (v) + " (rst / off)" : juce::String()));
     }
@@ -205,26 +645,37 @@ void SequencerPage::refresh()
 
 void SequencerPage::paint (juce::Graphics& g)
 {
-    g.setColour (colours::text);
-    g.setFont (font (14.0f, juce::Font::bold));
-    for (int row = 0; row < 4; ++row)
+    drawPanel (g, grid.toFloat(), juce::String::fromUTF8 ("Steps  ·  4 x 16"));
+    g.setFont (spaced (10.5f));
+    g.setColour (colours::silk);
+    for (size_t row = 0; row < dests.size(); ++row)
     {
-        const auto b = steps[(size_t) row * 16].getBounds();
-        g.drawText ("Seq " + juce::String (row + 1), pad, b.getY(), 56, b.getHeight(), juce::Justification::centredLeft);
+        const auto b = dests[row].getBounds();
+        g.drawText ("SEQ " + juce::String ((int) row + 1) + " DEST", b.getX(), b.getY() - 18, b.getWidth(), 16, juce::Justification::centredLeft);
+    }
+    g.setColour (colours::yellow);
+    for (int i = 0; i < 16; ++i)
+    {
+        const auto b = steps[(size_t) i].getBounds();
+        g.drawText (juce::String (i + 1), b.getX(), b.getY() - 16, b.getWidth(), 14, juce::Justification::centred);
     }
 }
 
 void SequencerPage::resized()
 {
     auto r = getLocalBounds().reduced (pad);
-    settings.setBounds (r.removeFromTop (settings.preferredHeight (r.getWidth())));
-    help.setBounds (r.removeFromBottom (36));
+    settings.setBounds (r.removeFromTop (settings.preferredHeight()));
     r.removeFromTop (pad);
-    r.removeFromLeft (60);
+    help.setBounds (r.removeFromBottom (32));
+    grid = r;
 
-    const int rowH = r.getHeight() / 4, colW = r.getWidth() / 16;
+    auto inner = r.reduced (pad + 4).withTrimmedTop (titleH + 12);
+    const auto left = inner.removeFromLeft (180);
+    const int rowHt = inner.getHeight() / 4, colW = inner.getWidth() / 16;
+    for (int row = 0; row < 4; ++row)
+        dests[(size_t) row].setBounds (left.getX(), inner.getY() + row * rowHt + rowHt / 2 - 4, left.getWidth() - 20, 26);
     for (int i = 0; i < evo::numSeqSteps; ++i)
-        steps[(size_t) i].setBounds (juce::Rectangle<int> (r.getX() + (i % 16) * colW, r.getY() + (i / 16) * rowH, colW, rowH).reduced (2));
+        steps[(size_t) i].setBounds (juce::Rectangle<int> (inner.getX() + (i % 16) * colW, inner.getY() + (i / 16) * rowHt, colW, rowHt).reduced (2));
 }
 
 //==============================================================================
@@ -258,7 +709,7 @@ PatchesPage::PatchesPage (EvoCtrlProcessor& p) : proc (p)
     for (char c = 32; c < 127; ++c)
         ascii << c;
     nameEditor.setInputRestrictions (evo::nameLength, ascii);
-    nameEditor.onTextChange = [this] { proc.patchName = nameEditor.getText(); };
+    nameEditor.onTextChange = [this] { proc.patchName = nameEditor.getText(); ++proc.changeCounter; }; // refreshes the LCD
     tagsEditor.setTextToShowWhenEmpty ("comma separated, e.g. bass, dark", colours::dim);
     searchEditor.setTextToShowWhenEmpty ("Search name or tag", colours::dim);
     searchEditor.onTextChange = [this] { rebuildList(); };
@@ -414,7 +865,7 @@ void PatchesPage::paintListBoxItem (int row, juce::Graphics& g, int w, int h, bo
         g.fillAll (colours::accent.withAlpha (0.25f));
 
     g.setFont (font (14.0f));
-    g.setColour (e.favourite ? colours::accent : colours::outline);
+    g.setColour (e.favourite ? colours::accent : colours::edge);
     g.drawText (juce::String (juce::CharPointer_UTF8 ("\xe2\x98\x85")), 6, 0, 20, h, juce::Justification::centred);
     g.setColour (colours::text);
     g.drawText (e.name, 30, 0, w / 2, h, juce::Justification::centredLeft, true);
@@ -600,19 +1051,24 @@ EvoCtrlEditor::EvoCtrlEditor (EvoCtrlProcessor& p) : juce::AudioProcessorEditor 
         addAndMakeVisible (c);
     fillPorts();
 
-    tabs.setTabBarDepth (30);
+    // Transparent pages: the editor paints the chassis and the blue overlay behind them.
+    const auto clear = juce::Colours::transparentBlack;
+    tabs.setTabBarDepth (38);
     tabs.setOutline (0);
-    tabs.addTab ("Synth", colours::bg, new SynthPage (proc), true);
-    tabs.addTab ("Sequencer", colours::bg, seqPage = new SequencerPage (proc), true);
-    tabs.addTab ("Patches", colours::bg, patchesPage = new PatchesPage (proc), true);
-    tabs.addTab ("Setup", colours::bg, new SetupPage (proc), true);
-    tabs.addTab ("MIDI monitor", colours::bg, monitorPage = new MonitorPage (proc), true);
+    for (const auto& t : layout::tabs())
+        tabs.addTab (t.name, clear, new SynthTab (proc, t), true);
+    tabs.addTab ("SEQUENCER", clear, seqPage = new SequencerPage (proc), true);
+    tabs.addTab ("PATCHES", clear, patchesPage = new PatchesPage (proc), true);
+    tabs.addTab ("SETUP", clear, new SetupPage (proc), true);
+    tabs.addTab ("MONITOR", clear, monitorPage = new MonitorPage (proc), true);
     addAndMakeVisible (tabs);
     setLookAndFeel (&laf); // last: slider text boxes copy their colours when the look-and-feel reaches them
 
     setResizable (true, true);
-    setResizeLimits (900, 560, 2560, 1600);
-    setSize (1180, 780);
+    setResizeLimits (1040, 640, 2560, 1600);
+    setSize (1240, 800);
+    for (int i = 0; i < evo::numParams; ++i)
+        seen[(size_t) i] = proc.param (i).get();
     timerCallback();
     startTimerHz (15);
 }
@@ -657,6 +1113,23 @@ void EvoCtrlEditor::timerCallback()
 {
     monitorPage->append (proc.link.popLog());
 
+    // Like the hardware, the LED shows the parameter that just moved (mouse, Live automation or an Evolver knob).
+    int changed = 0, last = -1;
+    for (int i = 0; i < evo::numParams; ++i)
+        if (const int v = proc.param (i).get(); v != seen[(size_t) i])
+        {
+            seen[(size_t) i] = v;
+            ++changed;
+            last = i;
+        }
+    const auto now = juce::Time::getMillisecondCounter();
+    if (changed > 0 || (touched >= 0 && now - touchedAt > 2500))
+    {
+        touched = changed == 1 ? last : -1; // several at once = a whole patch arrived: back to the program number
+        touchedAt = now;
+        repaint (lcd);
+    }
+
     const int c = proc.changeCounter.load();
     if (c == lastChange)
         return;
@@ -667,41 +1140,103 @@ void EvoCtrlEditor::timerCallback()
     seqPage->refresh();
     patchesPage->refresh();
     repaint (statusDot);
+    repaint (lcd);
 }
 
 void EvoCtrlEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (colours::bg);
+    const int chassisH = tabs.getY() + tabs.getTabBarDepth();
+    const float w = (float) getWidth(), h = (float) getHeight();
+
+    // Blue Lexan overlay with a faint diagonal sheen.
+    g.setGradientFill (juce::ColourGradient::vertical (colours::blueTop, (float) chassisH, colours::blueBottom, h));
+    g.fillRect (getLocalBounds().withTrimmedTop (chassisH));
+    juce::Path sheen;
+    sheen.addQuadrilateral (w * 0.35f, (float) chassisH, w * 0.55f, (float) chassisH, w * 0.25f, h, w * 0.05f, h);
+    g.setColour (juce::Colours::white.withAlpha (0.025f));
+    g.fillPath (sheen);
+
+    // Black brushed-metal chassis.
+    g.setColour (colours::chassis);
+    g.fillRect (0, 0, getWidth(), chassisH);
+    g.setColour (juce::Colours::white.withAlpha (0.018f));
+    for (int y = 0; y < chassisH; y += 3)
+        g.drawHorizontalLine (y, 0.0f, w);
+    g.setColour (juce::Colours::white.withAlpha (0.1f));
+    g.drawHorizontalLine (chassisH - 1, 0.0f, w);
+    drawScrew (g, { 12.0f, 12.0f });
+    drawScrew (g, { w - 12.0f, 12.0f });
+    drawScrew (g, { 12.0f, (float) tabs.getY() - 10.0f });
+    drawScrew (g, { w - 12.0f, (float) tabs.getY() - 10.0f });
+
+    auto area = lcd;
+    auto logo = area.removeFromLeft (170).reduced (0, 6);
+    g.setColour (colours::silk);
+    g.setFont (juce::Font (juce::FontOptions (32.0f, juce::Font::bold | juce::Font::italic)));
+    g.drawText ("EvoCtrl", logo.removeFromTop (38), juce::Justification::bottomLeft);
+    g.setColour (colours::yellow);
+    g.setFont (spaced (9.5f));
+    g.drawText ("EVOLVER EDITOR", logo.removeFromTop (16), juce::Justification::centredLeft);
+
+    // Red 3-digit LED: program number, or the value of the parameter that just moved.
+    area.removeFromLeft (pad);
+    const auto ledBox = area.removeFromLeft (130).withSizeKeepingCentre (130, 62).toFloat();
+    g.setColour (colours::recess);
+    g.fillRoundedRectangle (ledBox, 5.0f);
+    g.setColour (juce::Colours::white.withAlpha (0.08f));
+    g.drawRoundedRectangle (ledBox.reduced (0.5f), 5.0f, 1.0f);
+    const auto* p = touched >= 0 ? &evo::params[(size_t) touched] : nullptr;
+    drawSevenSegment (g, ledBox.reduced (14.0f, 11.0f), p != nullptr ? ledValue (*p, seen[(size_t) touched]) : juce::String (proc.program + 1));
+
+    area.removeFromLeft (14);
+    auto readout = area.withSizeKeepingCentre (area.getWidth(), 44);
+    g.setColour (colours::silk);
+    g.setFont (spaced (15.0f));
+    g.drawText (p != nullptr ? juce::String (p->name).toUpperCase()
+                             : proc.patchName.isEmpty() ? juce::String ("UNTITLED") : proc.patchName.toUpperCase(),
+                readout.removeFromTop (24), juce::Justification::centredLeft, true);
+    g.setColour (colours::yellow);
+    g.setFont (spaced (11.5f));
+    g.drawText (p != nullptr ? juce::String (evo::valueToText (*p, seen[(size_t) touched])).toUpperCase()
+                             : "BANK " + juce::String (proc.bank + 1) + juce::String::fromUTF8 ("  ·  PROGRAM ")
+                                   + juce::String (proc.program + 1).paddedLeft ('0', 3),
+                readout, juce::Justification::centredLeft, true);
 
     using K = EvoCtrlProcessor::StatusKind;
     const auto k = proc.status.kind;
-    g.setColour (k == K::Ok ? juce::Colour (0xff3ccf6e) : k == K::Warning ? juce::Colour (0xffffc23a)
-               : k == K::Error ? juce::Colour (0xffff4d4d) : colours::dim);
+    const auto dotColour = k == K::Ok ? juce::Colour (0xff3ccf6e) : k == K::Warning ? juce::Colour (0xffffc23a)
+                         : k == K::Error ? colours::led : colours::ledOff.brighter (0.4f);
+    g.setColour (dotColour.withAlpha (0.3f));
+    g.fillEllipse (statusDot.toFloat().expanded (4.0f));
+    g.setColour (dotColour);
     g.fillEllipse (statusDot.toFloat());
 }
 
 void EvoCtrlEditor::resized()
 {
     auto r = getLocalBounds();
-    auto bar = r.removeFromTop (70).reduced (pad, 6);
-    auto ports = bar.removeFromTop (30);
-    const auto take = [&ports] (juce::Component& c, int w) { c.setBounds (ports.removeFromLeft (w).reduced (2, 0)); };
+    auto bar = r.removeFromTop (96).reduced (pad * 3, 14);
+    lcd = bar.removeFromLeft (560);
+    bar.removeFromLeft (pad * 2);
 
-    take (inLabel, 28);
-    take (inBox, 190);
-    take (outLabel, 36);
-    take (outBox, 190);
-    take (chLabel, 30);
-    take (channelBox, 60);
-    take (rescanBtn, 72);
-    ports.removeFromLeft (pad);
-    sendBtn.setBounds (ports.removeFromRight (130).reduced (2, 0));
-    getBtn.setBounds (ports.removeFromRight (140).reduced (2, 0));
-    testBtn.setBounds (ports.removeFromRight (64).reduced (2, 0));
+    auto ports = bar.removeFromTop (28);
+    const auto take = [] (juce::Rectangle<int>& area, juce::Component& c, int w) { c.setBounds (area.removeFromLeft (w).reduced (2, 0)); };
+    const int boxW = juce::jlimit (110, 220, (ports.getWidth() - 230) / 2);
+    take (ports, inLabel, 28);
+    take (ports, inBox, boxW);
+    take (ports, outLabel, 36);
+    take (ports, outBox, boxW);
+    take (ports, chLabel, 30);
+    take (ports, channelBox, 60);
+    take (ports, rescanBtn, 76);
 
-    bar.removeFromTop (6);
-    statusDot = bar.removeFromLeft (28).withSizeKeepingCentre (12, 12);
-    statusLabel.setBounds (bar);
+    bar.removeFromTop (12);
+    auto actions = bar.removeFromTop (28);
+    sendBtn.setBounds (actions.removeFromRight (124).reduced (2, 0));
+    getBtn.setBounds (actions.removeFromRight (132).reduced (2, 0));
+    testBtn.setBounds (actions.removeFromRight (60).reduced (2, 0));
+    statusDot = actions.removeFromLeft (22).withSizeKeepingCentre (10, 10);
+    statusLabel.setBounds (actions);
 
-    tabs.setBounds (r);
+    tabs.setBounds (r.withTrimmedLeft (pad).withTrimmedRight (pad));
 }

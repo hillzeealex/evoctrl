@@ -1,5 +1,6 @@
 // Self-checks for the SysEx codec against sizes and examples from the manual (spec §2–3).
 #undef NDEBUG // asserts must run in Release builds too
+#include "../Source/EditorLayout.h"
 #include "../Source/EvolverSysex.h"
 #include <cassert>
 #include <cstdio>
@@ -70,6 +71,28 @@ int main()
         for (int v = prm.min; v <= prm.max; ++v)
             assert (! valueToText (prm, v).empty());
     }
+
+    // Every parameter has exactly one control in the editor, and envelope graphs point at A/D/S/R quadruples.
+    int placed[numParams] = {};
+    const auto count = [&] (const layout::Panel& panel)
+    {
+        for (const auto& row : panel.rows)
+        {
+            for (const auto& c : row.ctls)
+                ++placed[c.index];
+            assert (row.adsr < 0 || (std::string (params[(size_t) row.adsr].name).find ("Attack") != std::string::npos
+                                     && std::string (params[(size_t) row.adsr + 3].name).find ("Release") != std::string::npos));
+        }
+    };
+    for (const auto& tab : layout::tabs())
+        for (const auto& column : tab.columns)
+            for (const auto& panel : column)
+                count (panel);
+    count (layout::seqSettings());
+    for (int i : layout::seqDests)
+        ++placed[i];
+    for (int i = 0; i < numParams; ++i)
+        assert (placed[i] == 1);
 
     std::puts ("SysexTests: all passed");
     return 0;

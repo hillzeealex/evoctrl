@@ -1,5 +1,6 @@
 #pragma once
 
+#include "EditorLayout.h"
 #include "PluginProcessor.h"
 
 class EvoLookAndFeel : public juce::LookAndFeel_V4
@@ -7,39 +8,69 @@ class EvoLookAndFeel : public juce::LookAndFeel_V4
 public:
     EvoLookAndFeel();
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos, float start, float end, juce::Slider&) override;
+    void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool over, bool down) override;
+    void drawComboBox (juce::Graphics&, int w, int h, bool down, int, int, int, int, juce::ComboBox&) override;
+    void drawLinearSlider (juce::Graphics&, int x, int y, int w, int h, float pos, float minPos, float maxPos,
+                           juce::Slider::SliderStyle, juce::Slider&) override;
+    void drawTabButton (juce::TabBarButton&, juce::Graphics&, bool over, bool down) override;
+    void drawTabAreaBehindFrontButton (juce::TabbedButtonBar&, juce::Graphics&, int, int) override {}
+    int getTabButtonBestWidth (juce::TabBarButton&, int depth) override;
+    juce::Font getComboBoxFont (juce::ComboBox&) override;
+    juce::Font getPopupMenuFont() override;
 };
 
-// One section of the front panel: a titled group of knobs generated from evo::params.
-class SectionPanel : public juce::Component
+// ADSR graph that follows four consecutive host parameters.
+class EnvelopeView : public juce::Component, private juce::Timer
 {
 public:
-    SectionPanel (EvoCtrlProcessor&, evo::Group);
-    int preferredWidth (int maxCols) const;
-    int preferredHeight (int width) const;
+    EnvelopeView (EvoCtrlProcessor&, int attackIndex);
+    void paint (juce::Graphics&) override;
+
+private:
+    void timerCallback() override;
+    EvoCtrlProcessor& proc;
+    int first;
+    std::array<int, 4> shown { -1, -1, -1, -1 };
+};
+
+// One framed section of a page: a knob, menu or switch per parameter, chosen from its display type.
+class Panel : public juce::Component
+{
+public:
+    Panel (EvoCtrlProcessor&, const layout::Panel&);
+    int preferredWidth() const;
+    int preferredHeight() const;
     void paint (juce::Graphics&) override;
     void resized() override;
 
 private:
-    struct Knob
+    struct Control
     {
-        juce::Slider slider { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::TextBoxBelow };
+        std::unique_ptr<juce::Component> widget;
         juce::Label label;
-        std::unique_ptr<juce::SliderParameterAttachment> attachment;
+        std::shared_ptr<void> attachment;  // Slider / ComboBox / ButtonParameterAttachment, declared last = destroyed first
+        int width = 0;
+    };
+    struct Row
+    {
+        std::vector<std::unique_ptr<Control>> controls;
+        std::unique_ptr<EnvelopeView> envelope;
+        int width() const;
     };
     juce::String title;
-    std::vector<std::unique_ptr<Knob>> knobs;
+    std::vector<Row> rows;
 };
 
-class SynthPage : public juce::Component
+class SynthTab : public juce::Component
 {
 public:
-    explicit SynthPage (EvoCtrlProcessor&);
+    SynthTab (EvoCtrlProcessor&, const layout::Tab&);
     void resized() override;
 
 private:
     juce::Viewport viewport;
     juce::Component content;
-    std::vector<std::unique_ptr<SectionPanel>> sections;
+    std::vector<std::vector<std::unique_ptr<Panel>>> columns;
 };
 
 class SequencerPage : public juce::Component
@@ -52,9 +83,12 @@ public:
 
 private:
     EvoCtrlProcessor& proc;
-    SectionPanel settings;   // seq destinations, tempo, clock, trigger: next to the grid they drive
+    Panel settings;
+    std::array<juce::ComboBox, 4> dests;
+    std::array<std::unique_ptr<juce::ComboBoxParameterAttachment>, 4> destAttachments;
     std::array<juce::Slider, evo::numSeqSteps> steps;
     juce::Label help;
+    juce::Rectangle<int> grid;
 };
 
 class MonitorPage : public juce::Component
@@ -141,5 +175,8 @@ private:
     PatchesPage* patchesPage = nullptr;
     MonitorPage* monitorPage = nullptr;
     int lastChange = -1;
-    juce::Rectangle<int> statusDot;
+    juce::Rectangle<int> statusDot, lcd;
+    std::array<int, evo::numParams> seen {};   // last polled values: the LED shows whichever parameter moved last
+    int touched = -1;
+    juce::uint32 touchedAt = 0;
 };

@@ -59,7 +59,9 @@ public:
     std::atomic<bool> logEnabled { false };
     juce::StringArray popLog();
 
-    std::atomic<int> intervalMs { 1 };
+    // Below ~4 ms (a 9-byte SysEx takes ~3 ms on the wire) the Evolver drops messages in bursts (measured).
+    static constexpr int minIntervalMs = 4;
+    std::atomic<int> intervalMs { minIntervalMs };
     std::atomic<bool> directParams { true };
     std::function<void()> onReceived;
 

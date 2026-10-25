@@ -927,7 +927,7 @@ SetupPage::SetupPage (EvoCtrlProcessor& p) : proc (p)
     modeBox.setSelectedId (proc.viaAbleton.load() ? 2 : 1, juce::dontSendNotification);
     modeBox.onChange = [this] { proc.setViaAbleton (modeBox.getSelectedId() == 2); };
 
-    intervalSlider.setRange (0, 50, 1);
+    intervalSlider.setRange (EvolverLink::minIntervalMs, 50, 1);
     intervalSlider.setValue (proc.link.intervalMs.load(), juce::dontSendNotification);
     intervalSlider.onValueChange = [this] { proc.link.intervalMs = (int) intervalSlider.getValue(); };
     intervalSlider.setTooltip ("Raise it if the Evolver drops or lags parameter changes during dense automation");

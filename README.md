@@ -71,7 +71,7 @@ Le manuel v3.2a ne mentionne pas de réglage « SysEx On/Off » : il n'y a rien 
    (barre du haut : *In*, *Out*). Ça couvre tout : paramètres, dumps, lecture/écriture de programmes, séquenceur,
    retour des potards. Raison : Live ne transmet pas de façon fiable le SysEx émis par un plugin.
    Les envois passent par une file coalescée (un paramètre bougé 100 fois n'est envoyé qu'avec sa dernière valeur),
-   avec un délai réglable entre messages (Setup > *Min. interval*, 1 ms par défaut).
+   avec un délai réglable entre messages (Setup > *Min. interval*, 4 ms par défaut et minimum : en dessous, l'Evolver perd des messages en rafale, mesuré sur le matériel).
 2. **Via Ableton (expérimental).** Les mouvements partent en **CC** sur la sortie MIDI du plugin. À router depuis une
    autre piste MIDI : *MIDI From* = piste EvoCtrl > EvoCtrl, *MIDI To* = port de l'Evolver. Seuls les paramètres qui
    ont un CC documenté passent. La mise à l'échelle 0–127 est linéaire et **pas encore vérifiée** sur le matériel.

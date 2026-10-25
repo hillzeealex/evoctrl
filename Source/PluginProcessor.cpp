@@ -313,7 +313,7 @@ void EvoCtrlProcessor::setStateInformation (const void* data, int size)
 
     midiChannel = juce::jlimit (1, 16, (int) state.getProperty ("channel", 1));
     setViaAbleton (state["viaAbleton"]);
-    link.intervalMs = juce::jlimit (0, 50, (int) state.getProperty ("intervalMs", 1));
+    link.intervalMs = juce::jlimit (EvolverLink::minIntervalMs, 50, (int) state.getProperty ("intervalMs", EvolverLink::minIntervalMs));
     resendOnLoad = state["resendOnLoad"];
     patchName = state["patchName"].toString();
     bank = state["bank"];

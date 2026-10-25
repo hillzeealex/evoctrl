@@ -256,8 +256,9 @@ int EvoCtrlProcessor::wavesKnown() const
     return (int) std::count_if (waves.begin(), waves.end(), [] (const auto& w) { return w.has_value(); });
 }
 
-void EvoCtrlProcessor::readWaves()
+void EvoCtrlProcessor::readWaves (bool onlyMissing)
 {
+    waveOnlyMissing = onlyMissing;
     if (! link.hasOutput() || ! link.hasInput())
         return setStatus (StatusKind::Error, "Select both a MIDI input and output first");
     waveNext = 0;
@@ -268,6 +269,8 @@ void EvoCtrlProcessor::readWaves()
 // One request at a time: the next goes out when this one answers (handleAsyncUpdate) or times out (watchdog).
 void EvoCtrlProcessor::requestNextWave()
 {
+    while (waveOnlyMissing && waveNext < evo::numWaves && waves[(size_t) waveNext])
+        ++waveNext;
     if (waveNext >= evo::numWaves)
     {
         waveNext = -1;

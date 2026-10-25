@@ -227,6 +227,7 @@ static juce::String ledValue (const evo::Param& p, int v)
     if (p.disp == evo::Disp::Bipolar99) return juce::String (v - 99);
     if (p.disp == evo::Disp::Fine50)    return juce::String (v - 50);
     if (p.disp == evo::Disp::KeyXpose)  return v == 0 ? juce::String ("OFF") : juce::String (v - 37);
+    if (p.disp == evo::Disp::Wave)      return juce::String (v + 1);   // waves are numbered 1-128 on the Evolver
     return juce::String (v);
 }
 
@@ -788,6 +789,12 @@ void WaveView::paint (juce::Graphics& g)
         g.drawText (editable ? "DRAW A WAVE HERE, OR LOAD ONE" : "?", a, juce::Justification::centred);
     }
 
+    if (editable && label.isNotEmpty())
+    {
+        g.setColour (colours::yellow);
+        g.setFont (spaced (12.0f));
+        g.drawText (label, r.reduced (18.0f, 8.0f).removeFromTop (16.0f), juce::Justification::centredLeft);
+    }
     if (! editable)
     {
         const auto row = r.reduced (5.0f, 2.0f).removeFromBottom (12.0f);
@@ -961,22 +968,29 @@ WavesPage::WavesPage (EvoCtrlProcessor& p) : proc (p)
     for (auto* b : { &romBtn, &userBtn })
         b->setColour (juce::TextButton::textColourOnId, colours::yellow); // active bank = yellow text (no LED over the label)
     romBtn.setToggleState (true, juce::dontSendNotification);
-    const auto showBank = [this] (bool user)
-    {
-        showUser = user;
-        romBtn.setToggleState (! user, juce::dontSendNotification);
-        userBtn.setToggleState (user, juce::dontSendNotification);
-        layoutTiles();
-        refresh();
-    };
-    romBtn.onClick = [showBank] { showBank (false); };
-    userBtn.onClick = [showBank] { showBank (true); };
+    romBtn.onClick = [this] { showBank (false); };
+    userBtn.onClick = [this] { showBank (true); };
 
     readBtn.setTooltip ("Read all 128 waveshapes from the Evolver (about 15 s; kept for next time)");
-    readBtn.onClick = [this] { proc.readWaves(); };
+    readBtn.onClick = [this] { proc.readWaves (false); };
 
-    sendBtn.setTooltip ("Store the edited wave in this user slot of the Evolver (it is kept in its memory)");
-    sendBtn.onClick = [this] { proc.sendWave (selectedSlot, editor.wave); };
+    sendBtn.setTooltip ("Write the wave on screen into this user wave of the Evolver (97-128), replacing what is there. "
+                        "Any program can then use it by setting an Osc 3/4 Wave to this number.");
+    sendBtn.onClick = [this]
+    {
+        const auto& current = proc.waves[(size_t) selectedSlot];
+        if (! current || *current == editor.wave)
+            return proc.sendWave (selectedSlot, editor.wave);
+        juce::AlertWindow::showAsync (
+            juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::WarningIcon, "Replace a user wave",
+                "Wave " + juce::String (selectedSlot + 1) + " on the Evolver already holds another shape. Replace it?",
+                "Replace", "Cancel", this),
+            [safe = SafePointer<WavesPage> (this), slot = selectedSlot, wave = editor.wave] (int result)
+            {
+                if (safe != nullptr && result == 1)
+                    safe->proc.sendWave (slot, wave);
+            });
+    };
 
     saveBtn.setTooltip ("Save the edited wave as a .syx file in Documents/EvoCtrl/Waves");
     saveBtn.onClick = [this]
@@ -990,6 +1004,8 @@ WavesPage::WavesPage (EvoCtrlProcessor& p) : proc (p)
     oscBox.addItem ("OSC 3", 1);
     oscBox.addItem ("OSC 4", 2);
     oscBox.setSelectedId (1, juce::dontSendNotification);
+    oscBox.setTooltip ("The oscillator whose wave this page shows and plays");
+    oscBox.onChange = [this] { dirty = false; follow (true); };
     auditionBtn.setTooltip ("Send the wave to its slot and select that slot on the chosen digital oscillator");
     auditionBtn.onClick = [this]
     {
@@ -1018,11 +1034,13 @@ WavesPage::WavesPage (EvoCtrlProcessor& p) : proc (p)
                 beginEdit();
                 setWave (*proc.waves[(size_t) i]);
                 loadedFrom = i;
+                editor.label = "WAVE " + juce::String (i + 1) + (i < evo::firstUserWave ? "  ·  ROM: edit a copy, then send it to a user slot" : "  ·  USER");
             }
             refresh();
         };
         tilesContent.addChildComponent (*t);
     }
+    startTimerHz (5);
     tilesView.setViewedComponent (&tilesContent, false);
     tilesView.setScrollBarsShown (true, false);
 
@@ -1061,13 +1079,63 @@ void WavesPage::fromHarmonics()
 
 void WavesPage::visibilityChanged()
 {
-    // First visit with nothing cached: fetch the thumbnails once.
-    if (isShowing() && proc.wavesKnown() == 0 && ! proc.readingWaves() && proc.link.hasInput() && proc.link.hasOutput())
-        proc.readWaves();
+    if (! isShowing())
+        return;
+    // Fetch whatever is not cached yet (all 128 on the first visit), then show the program's wave.
+    if (proc.wavesKnown() < evo::numWaves && ! proc.readingWaves() && proc.link.hasInput() && proc.link.hasOutput())
+        proc.readWaves (true);
+    follow (false);
+}
+
+void WavesPage::timerCallback()
+{
+    const int osc3 = proc.param (10).get(), osc4 = proc.param (14).get();
+    if (osc3 == lastOsc3 && osc4 == lastOsc4)
+        return;
+    lastOsc3 = osc3;
+    lastOsc4 = osc4;
+    follow (false);
+    refresh();
+}
+
+void WavesPage::showBank (bool user)
+{
+    showUser = user;
+    romBtn.setToggleState (! user, juce::dontSendNotification);
+    userBtn.setToggleState (user, juce::dontSendNotification);
+    layoutTiles();
+    refresh();
+}
+
+// Shows the wave the current program plays on the chosen oscillator (unless the user is editing their own).
+void WavesPage::follow (bool force)
+{
+    const int w = proc.param (oscBox.getSelectedId() == 1 ? 10 : 14).get();   // Osc 3/4 Shape: 0-127 = waves 1-128
+    if (! force && (dirty || w == followed))
+        return;
+    followed = loadedFrom = w;
+    if (w >= evo::firstUserWave)
+        selectedSlot = w;   // a user wave: SEND writes straight back to the slot the sound uses
+    editor.known = proc.waves[(size_t) w].has_value();
+    if (editor.known)
+        editor.wave = *proc.waves[(size_t) w];
+    editor.label = oscBox.getText() + "  ·  WAVE " + juce::String (w + 1)
+                 + (w < evo::firstUserWave ? "  ·  ROM: edit a copy, then send it to a user slot" : "  ·  USER, editable");
+    editor.repaint();
+    showBank (w >= evo::firstUserWave);
+    tilesView.setViewPosition (0, juce::jmax (0, tiles[(size_t) w]->getY() - 8));
 }
 
 void WavesPage::refresh()
 {
+    // The followed wave arrived after the page showed it as unknown.
+    if (! dirty && followed >= 0 && ! editor.known && proc.waves[(size_t) followed])
+    {
+        editor.wave = *proc.waves[(size_t) followed];
+        editor.known = true;
+        editor.repaint();
+    }
+    const int osc3 = proc.param (10).get(), osc4 = proc.param (14).get();
     for (int i = 0; i < evo::numWaves; ++i)
     {
         auto& t = *tiles[(size_t) i];
@@ -1077,10 +1145,11 @@ void WavesPage::refresh()
             t.wave = *w;
         const bool isSlot = i == selectedSlot;
         t.selected = isSlot || i == loadedFrom;
-        t.label = i < evo::firstUserWave ? juce::String ("ROM") : isSlot ? juce::String ("EDIT") : w ? juce::String ("USER") : juce::String ("EMPTY");
+        t.label = i == osc3 ? juce::String ("OSC 3") : i == osc4 ? juce::String ("OSC 4")
+                : i < evo::firstUserWave ? juce::String ("ROM") : isSlot ? juce::String ("EDIT") : w ? juce::String ("USER") : juce::String ("EMPTY");
         t.repaint();
     }
-    sendBtn.setButtonText ("SEND TO SLOT " + juce::String (selectedSlot + 1));
+    sendBtn.setButtonText ("STORE AS WAVE " + juce::String (selectedSlot + 1));
     progress.setText (proc.readingWaves() ? proc.status.text
                                           : juce::String (proc.wavesKnown()) + " / 128 read  ·  user slots 97-128 are writable",
                       juce::dontSendNotification);

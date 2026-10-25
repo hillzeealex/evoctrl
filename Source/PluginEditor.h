@@ -118,7 +118,7 @@ private:
     juce::Point<float> last;
 };
 
-class WavesPage : public juce::Component
+class WavesPage : public juce::Component, private juce::Timer
 {
 public:
     explicit WavesPage (EvoCtrlProcessor&);
@@ -128,7 +128,10 @@ public:
     void visibilityChanged() override;
 
 private:
-    void beginEdit() { undo = editor.wave; }
+    void timerCallback() override;      // follows the current program's Osc 3/4 wave
+    void follow (bool force);
+    void showBank (bool user);
+    void beginEdit() { undo = editor.wave; dirty = true; }
     void endEdit();
     void setWave (const evo::Waveshape&);
     void fromHarmonics();
@@ -150,6 +153,8 @@ private:
     std::array<std::unique_ptr<WaveView>, evo::numWaves> tiles;
     bool showUser = false;
     int selectedSlot = evo::firstUserWave, loadedFrom = -1;
+    int followed = -1, lastOsc3 = -1, lastOsc4 = -1;
+    bool dirty = false;   // the editor holds the user's own edit: don't replace it when the program changes
     juce::Rectangle<int> editorPanel, harmPanel, libPanel, audPanel;
     std::unique_ptr<juce::FileChooser> chooser;
 };

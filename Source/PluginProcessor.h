@@ -47,7 +47,7 @@ public:
 
     // WAVES tab. Message thread only. What was read from (or sent to) the Evolver, kept on disk between sessions.
     std::array<std::optional<evo::Waveshape>, evo::numWaves> waves;
-    void readWaves();                                   // all 128, one request at a time
+    void readWaves (bool onlyMissing = false);          // one request at a time
     void sendWave (int num, const evo::Waveshape&);     // num 96-127 only (stored by the Evolver)
     bool readingWaves() const { return waveNext >= 0; }
     int wavesKnown() const;
@@ -98,7 +98,7 @@ private:
     struct Watchdog : juce::Timer { std::function<void()> fn; void timerCallback() override { fn(); } };
     Watchdog waveWatchdog;   // a wave that never answers is skipped
     int waveNext = -1;
-    bool waveRetried = false;
+    bool waveRetried = false, waveOnlyMissing = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EvoCtrlProcessor)
 };

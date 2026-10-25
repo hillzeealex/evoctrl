@@ -4,6 +4,8 @@ An editor and controller for the **Dave Smith Instruments Evolver (desktop, mono
 and a standalone app. The whole synth sits on one panel and can be automated in Ableton Live. Sync works both
 ways: turn a knob in the plug-in and the Evolver follows, turn a knob on the Evolver and the plug-in follows.
 
+> **Tested on macOS only.** The Windows build has never been compiled or tested (see [Compatibility](#compatibility)).
+
 ![SYNTH page](docs/images/synth.jpg)
 
 - [Features](#features)
@@ -291,6 +293,7 @@ Everything lives in `~/Documents/EvoCtrl/`:
 
 ## Known limitations
 
+- No Windows or Linux testing so far.
 - No NRPN (not in the manual): SysEx in Direct mode, CCs as an option.
 - *Via Ableton* mode: CC scaling not checked, only ~40 parameters.
 - The name sent with *Write* uses a documented message, but the manual does not say whether the Evolver keeps it.

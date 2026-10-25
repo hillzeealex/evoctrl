@@ -37,6 +37,7 @@ void EvoCtrlProcessor::parameterValueChanged (int index, float normalised)
     if (lastValue[(size_t) index].exchange (v) == v || muteOutgoing.load())
         return;
     link.queueParam (index, v);
+    sentAt[(size_t) index] = juce::Time::getMillisecondCounter();
 }
 
 void EvoCtrlProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -148,12 +149,12 @@ void EvoCtrlProcessor::handleAsyncUpdate()
         switch (m.kind)
         {
             case K::ProgramParam:
-                if (m.index < evo::numParams)
+                if (m.index < evo::numParams && juce::Time::getMillisecondCounter() - sentAt[(size_t) m.index] > echoWindowMs)
                     setParamFromDevice (m.index, m.value);
                 break;
 
             case K::SeqParam:
-                if (m.index < evo::numSeqSteps)
+                if (m.index < evo::numSeqSteps && juce::Time::getMillisecondCounter() - seqSentAt[(size_t) m.index] > echoWindowMs)
                 {
                     seq[(size_t) m.index] = m.value;
                     ++changeCounter;
@@ -239,6 +240,7 @@ void EvoCtrlProcessor::setSeqStep (int step, int value)
 {
     seq[(size_t) step] = value;
     link.queueSeq (step, value);
+    seqSentAt[(size_t) step] = juce::Time::getMillisecondCounter();
 }
 
 bool EvoCtrlProcessor::importSyx (const juce::File& f)

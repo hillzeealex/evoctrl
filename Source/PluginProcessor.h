@@ -76,6 +76,11 @@ private:
     std::array<juce::AudioParameterInt*, evo::numParams> params {};
     std::array<std::atomic<int>, evo::numParams> lastValue {};   // last value known on both sides: anti-echo + dedupe
     std::array<std::atomic<int>, evo::numSeqSteps> seq {};
+    // The Evolver echoes every parameter it receives; values arriving this soon after we sent that
+    // parameter are echoes (often of an older value mid-drag) and are ignored.
+    static constexpr juce::uint32 echoWindowMs = 400;
+    std::array<std::atomic<juce::uint32>, evo::numParams> sentAt {};
+    std::array<juce::uint32, evo::numSeqSteps> seqSentAt {};
     std::atomic<bool> muteOutgoing { false };                    // true while applying device/state values
     bool pendingTest = false, applyNextEditBuffer = false, pendingProgramRead = false;
 

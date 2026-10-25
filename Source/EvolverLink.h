@@ -87,4 +87,11 @@ private:
 
     std::mutex logLock;
     juce::StringArray logLines;
+
+   #if JUCE_MAC
+    // JUCE 8 sends through CoreMIDI's MIDI 2.0 API, which splits SysEx into 6-byte chunks; the Evolver
+    // (behind a MOTU UltraLite, verified) misreads split messages, so on macOS each message goes out
+    // as one legacy CoreMIDI packet instead. Refs are MIDIClientRef / MIDIPortRef / MIDIEndpointRef.
+    std::uint32_t macClient = 0, macPort = 0, macDest = 0;
+   #endif
 };

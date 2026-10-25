@@ -281,6 +281,12 @@ Séquenceur uniquement : 69 Clock multiplier · 70 MIDI Note Out · 71 MIDI Velo
 
 ## 8. Autres incohérences relevées dans le manuel
 
+- **Vérifié sur le matériel (Evolver + MOTU UltraLite-mk4, macOS)** : un SysEx découpé en plusieurs paquets
+  CoreMIDI (ce que fait l'API MIDI 2.0 / UMP utilisée par JUCE 8 : 6 octets par paquet) est mal lu ; le paramètre
+  prend une valeur fausse (toujours 17 pour le cutoff). Envoyé en un seul paquet, il est correct. EvoCtrl envoie donc
+  ses SysEx en un paquet via l'API CoreMIDI classique sur macOS.
+- **Poly Chain ≠ OFF** : l'Evolver renvoie sur MIDI OUT tout ce qu'il reçoit, mélangé à ses dumps (dumps tronqués).
+
 - p.41 : *MIDI Xmit* `par` = « Only MIDI parameters **received** » (typo ; p.17 dit « sent »).
 - p.17 : *MIDI Dump* `ALL` = « all programs in all **three** banks » alors qu'il y a 4 banques (0–3, p.48).
 - p.52 : *Request Main Parameter Dump* : « will respond by sending out the current **edit buffer** in the

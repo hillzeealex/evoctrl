@@ -1,7 +1,56 @@
 #include "EvolverLink.h"
 
+#if JUCE_MAC
+ #include <CoreMIDI/CoreMIDI.h>
+
+static juce::String macString (MIDIObjectRef obj, CFStringRef property)
+{
+    CFStringRef s = nullptr;
+    if (MIDIObjectGetStringProperty (obj, property, &s) != noErr || s == nullptr)
+        return {};
+    const auto result = juce::String::fromCFString (s);
+    CFRelease (s);
+    return result;
+}
+
+// Finds the CoreMIDI destination behind a JUCE output: by unique ID (JUCE's identifier is built from
+// the endpoint/entity/device IDs), else by name.
+static MIDIEndpointRef findMacDestination (const juce::MidiDeviceInfo& info)
+{
+    const auto tokens = juce::StringArray::fromTokens (info.identifier, " ,", {});
+    MIDIEndpointRef byName = 0;
+
+    for (ItemCount i = 0; i < MIDIGetNumberOfDestinations(); ++i)
+    {
+        const auto dest = MIDIGetDestination (i);
+        MIDIEntityRef entity = 0;
+        MIDIEndpointGetEntity (dest, &entity);
+
+        for (const MIDIObjectRef obj : { (MIDIObjectRef) dest, (MIDIObjectRef) entity })
+        {
+            SInt32 id = 0;
+            if (obj != 0 && MIDIObjectGetIntegerProperty (obj, kMIDIPropertyUniqueID, &id) == noErr && tokens.contains (juce::String (id)))
+                return dest;
+        }
+        if (byName == 0 && macString (dest, kMIDIPropertyDisplayName) == info.name)
+            byName = dest;
+    }
+    return byName;
+}
+#endif
+
 EvolverLink::EvolverLink() : juce::Thread ("EvoCtrl MIDI out")
 {
+   #if JUCE_MAC
+    MIDIClientRef client = 0;
+    MIDIPortRef port = 0;
+    if (MIDIClientCreate (CFSTR ("EvoCtrl"), nullptr, nullptr, &client) == noErr
+        && MIDIOutputPortCreate (client, CFSTR ("EvoCtrl out"), &port) == noErr)
+    {
+        macClient = client;
+        macPort = port;
+    }
+   #endif
     startThread();
 }
 
@@ -9,6 +58,10 @@ EvolverLink::~EvolverLink()
 {
     stopThread (2000);
     close();
+   #if JUCE_MAC
+    if (macClient != 0)
+        MIDIClientDispose (macClient);
+   #endif
 }
 
 template <typename Device>
@@ -36,6 +89,12 @@ juce::String EvolverLink::open (const juce::String& inputId, const juce::String&
         output = juce::MidiOutput::openDevice (outputId);
         if (output == nullptr)
             errors.add (portError<juce::MidiOutput> ("output", outputId));
+       #if JUCE_MAC
+        else
+            for (const auto& d : juce::MidiOutput::getAvailableDevices())
+                if (d.identifier == outputId)
+                    macDest = findMacDestination (d);
+       #endif
     }
 
     if (inputId.isNotEmpty())
@@ -57,6 +116,9 @@ void EvolverLink::close()
         input->stop();
     input.reset();
     output.reset();
+   #if JUCE_MAC
+    macDest = 0;
+   #endif
 }
 
 bool EvolverLink::hasInput() const  { std::lock_guard lock (portLock); return input != nullptr; }
@@ -96,6 +158,20 @@ void EvolverLink::send (const evo::Bytes& bytes)
 {
     log ("OUT", bytes.data(), (int) bytes.size());
     std::lock_guard lock (portLock);
+
+   #if JUCE_MAC
+    if (macPort != 0 && macDest != 0)
+    {
+        alignas (MIDIPacketList) Byte buffer[1024]; // largest message is a 226-byte dump
+        auto* list = reinterpret_cast<MIDIPacketList*> (buffer);
+       #pragma clang diagnostic push
+       #pragma clang diagnostic ignored "-Wdeprecated-declarations" // the legacy API is the point
+        auto* packet = MIDIPacketListAdd (list, sizeof (buffer), MIDIPacketListInit (list), 0, bytes.size(), bytes.data());
+        if (packet != nullptr && MIDISend (macPort, macDest, list) == noErr)
+            return;
+       #pragma clang diagnostic pop
+    }
+   #endif
     if (output != nullptr)
         output->sendMessageNow (juce::MidiMessage (bytes.data(), (int) bytes.size()));
 }

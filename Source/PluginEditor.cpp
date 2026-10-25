@@ -1151,7 +1151,7 @@ void WavesPage::refresh()
     }
     sendBtn.setButtonText ("STORE AS WAVE " + juce::String (selectedSlot + 1));
     progress.setText (proc.readingWaves() ? proc.status.text
-                                          : juce::String (proc.wavesKnown()) + " / 128 read  ·  user slots 97-128 are writable",
+                                          : juce::String (proc.wavesKnown()) + " / 128 read  ·  one list for all 4 banks: wave 97 is the same in every program",
                       juce::dontSendNotification);
 }
 

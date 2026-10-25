@@ -166,6 +166,38 @@ static void drawScrew (juce::Graphics& g, juce::Point<float> c)
     g.drawLine ({ c.translated (-3.0f, -1.2f), c.translated (3.0f, 1.2f) }, 1.5f);
 }
 
+// Wordmark in the spirit of the Evolver panel logo: mixed-size letters on one baseline, slightly
+// overlapping, each filled light blue with a white outline (later letters sit over earlier ones).
+static void drawWordmark (juce::Graphics& g, juce::Point<float> centre, float H, float fillAlpha, float strokeAlpha)
+{
+    struct Letter { const char* ch; float size; };
+    const Letter spec[] { { "e", 0.72f }, { "V", 0.95f }, { "O", 1.1f }, { "L", 1.6f }, { "v", 0.58f }, { "e", 0.82f }, { "r", 1.6f } };
+    std::vector<juce::Path> letters;
+    juce::Rectangle<float> all;
+    float x = 0.0f;
+    for (const auto& l : spec)
+    {
+        juce::GlyphArrangement ga;
+        ga.addLineOfText (juce::Font (juce::FontOptions ("Futura", H * l.size, juce::Font::bold)), l.ch, 0.0f, 0.0f);
+        juce::Path p;
+        ga.createPath (p);
+        const auto b = p.getBounds();
+        p.applyTransform (juce::AffineTransform::translation (x - b.getX(), 0.0f)); // baseline stays at y = 0
+        x += b.getWidth() - H * 0.1f;
+        all = all.isEmpty() ? p.getBounds() : all.getUnion (p.getBounds());
+        letters.push_back (std::move (p));
+    }
+    const auto shift = juce::AffineTransform::translation (centre.x - all.getCentreX(), centre.y - all.getCentreY());
+    for (auto& p : letters)
+    {
+        p.applyTransform (shift);
+        g.setColour (juce::Colour (0xff3d7fe0).withAlpha (fillAlpha));
+        g.fillPath (p);
+        g.setColour (juce::Colours::white.withAlpha (strokeAlpha));
+        g.strokePath (p, juce::PathStrokeType (H * 0.035f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+}
+
 enum class Widget { Knob, Menu, Switch };
 
 static Widget widgetFor (evo::Disp d)
@@ -1181,14 +1213,7 @@ void EvoCtrlEditor::paint (juce::Graphics& g)
         g.setColour (colours::blueTop.brighter (0.5f).withAlpha (0.16f));
         g.strokePath (arc, juce::PathStrokeType (ph * 0.022f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
-        juce::GlyphArrangement word;
-        word.addLineOfText (juce::Font (juce::FontOptions ("Arial Rounded MT Bold", ph * 0.34f, juce::Font::bold)), "evolver", 0.0f, 0.0f);
-        juce::Path letters;
-        word.createPath (letters);
-        const auto b = letters.getBounds();
-        letters.applyTransform (juce::AffineTransform::translation (w * 0.5f - b.getCentreX(), top + ph * 0.56f - b.getCentreY()));
-        g.setColour (juce::Colours::white.withAlpha (0.07f));
-        g.strokePath (letters, juce::PathStrokeType (ph * 0.006f));
+        drawWordmark (g, { w * 0.5f, top + ph * 0.55f }, ph * 0.3f, 0.22f, 0.3f);
     }
 
     // Black brushed-metal chassis.

@@ -1173,6 +1173,24 @@ void EvoCtrlEditor::paint (juce::Graphics& g)
     g.setColour (juce::Colours::white.withAlpha (0.025f));
     g.fillPath (sheen);
 
+    // Watermark in the spirit of the Evolver panel: the big swoosh arc and an outlined lowercase wordmark.
+    {
+        const float top = (float) chassisH, ph = h - top;
+        juce::Path arc;
+        arc.addCentredArc (w * 0.17f, top + ph * 0.58f, ph * 0.62f, ph * 0.56f, 0.0f, -2.4f, 2.0f, true);
+        g.setColour (colours::blueTop.brighter (0.5f).withAlpha (0.16f));
+        g.strokePath (arc, juce::PathStrokeType (ph * 0.022f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+        juce::GlyphArrangement word;
+        word.addLineOfText (juce::Font (juce::FontOptions ("Arial Rounded MT Bold", ph * 0.34f, juce::Font::bold)), "evolver", 0.0f, 0.0f);
+        juce::Path letters;
+        word.createPath (letters);
+        const auto b = letters.getBounds();
+        letters.applyTransform (juce::AffineTransform::translation (w * 0.5f - b.getCentreX(), top + ph * 0.56f - b.getCentreY()));
+        g.setColour (juce::Colours::white.withAlpha (0.07f));
+        g.strokePath (letters, juce::PathStrokeType (ph * 0.006f));
+    }
+
     // Black brushed-metal chassis.
     g.setColour (colours::chassis);
     g.fillRect (0, 0, getWidth(), chassisH);

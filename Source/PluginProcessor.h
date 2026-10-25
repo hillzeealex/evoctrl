@@ -83,6 +83,7 @@ private:
     std::array<juce::uint32, evo::numSeqSteps> seqSentAt {};
     std::atomic<bool> muteOutgoing { false };                    // true while applying device/state values
     bool pendingTest = false, applyNextEditBuffer = false, pendingProgramRead = false;
+    bool pendingMain = false, nameAfterDump = false; // another client's requests also reach us: only handle our own
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EvoCtrlProcessor)
 };

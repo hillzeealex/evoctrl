@@ -48,6 +48,11 @@ int main()
     r = parse (pd.data(), pd.size());
     assert (r && r->kind == Parsed::Kind::Program && r->index == 2 && r->value == 5 && r->patch == patch);
 
+    Bytes unnamed { 0x01, 0x20, 0x01, 0x11, 0, 5 };
+    unnamed.insert (unnamed.end(), nameLength, 0x7F);
+    r = parse (unnamed.data(), unnamed.size());
+    assert (r && r->kind == Parsed::Kind::Name && r->name.empty());
+
     auto nd = body (nameDump (0, 1, "Bass"));
     r = parse (nd.data(), nd.size());
     assert (r && r->kind == Parsed::Kind::Name && r->name == "Bass");

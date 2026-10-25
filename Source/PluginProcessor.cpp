@@ -93,6 +93,7 @@ void EvoCtrlProcessor::requestEditBuffer (bool apply)
 
     pendingTest = true;
     applyNextEditBuffer = apply;
+    pendingMain = true;
     link.queueSysex (evo::requestMainParams()); // current bank/program, then its name (see K::Main)
     link.queueSysex (evo::requestEditBuffer());
     setStatus (StatusKind::Warning, "Waiting for the Evolver...");
@@ -103,9 +104,9 @@ void EvoCtrlProcessor::timerCallback()
 {
     stopTimer();
     if (pendingTest || pendingProgramRead)
-        setStatus (StatusKind::Error, "No answer from the Evolver. Check cables/ports and its globals: "
-                                      "MIDI Rec = ALL, MIDI Xmit = ALL (see Setup tab)");
-    pendingTest = pendingProgramRead = false;
+        setStatus (StatusKind::Error, "No (complete) answer from the Evolver. Check both MIDI cables and its globals: "
+                                      "MIDI Rec = ALL, MIDI Xmit = ALL, Poly Chain = OFF (see Setup tab)");
+    pendingTest = pendingProgramRead = pendingMain = nameAfterDump = false;
 }
 
 void EvoCtrlProcessor::sendToEvolver()
@@ -170,6 +171,8 @@ void EvoCtrlProcessor::handleAsyncUpdate()
                         applyPatch (m.patch, false);
                     setStatus (StatusKind::Ok, applyNextEditBuffer ? "Edit buffer received from the Evolver"
                                                                    : "Evolver connected and answering");
+                    if (std::exchange (nameAfterDump, false))
+                        link.queueSysex (evo::requestName (bank, program));
                 }
                 break;
 
@@ -184,10 +187,14 @@ void EvoCtrlProcessor::handleAsyncUpdate()
                 break;
 
             case K::Main:
-                bank = m.index;
-                program = m.value;
-                link.queueSysex (evo::requestName (bank, program));
-                ++changeCounter;
+                if (pendingMain)
+                {
+                    pendingMain = false;
+                    bank = m.index;
+                    program = m.value;
+                    nameAfterDump = true; // asking now would cut into the edit buffer dump the Evolver is sending
+                    ++changeCounter;
+                }
                 break;
 
             case K::ProgramChange: // program picked on the Evolver: its edit buffer now holds it

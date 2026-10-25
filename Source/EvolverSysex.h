@@ -162,6 +162,9 @@ inline std::optional<Parsed> parse (const uint8_t* d, size_t n)
             if (n != (size_t) nameLength + 2) return std::nullopt;
             Parsed r { Parsed::Kind::Name, d[0], d[1] };
             r.name.assign (d + 2, d + 2 + nameLength);
+            for (auto& c : r.name)
+                if (c < 0x20 || c > 0x7E) // unnamed programs are filled with 0x7F
+                    c = ' ';
             r.name.erase (r.name.find_last_not_of (' ') + 1);
             return r;
         }

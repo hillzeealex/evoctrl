@@ -10,7 +10,8 @@ namespace colours
     const juce::Colour text = silk, accent = yellow, dim { 0xff9aabcf }, edge { 0xff5170b4 };
 }
 
-constexpr int knobW = 78, comboW = 132, rowH = 98, envH = 74, titleH = 28, pad = 8;
+constexpr int woodW = 22; // walnut cheeks, like the Evolver keyboard
+constexpr int knobW = 66, comboW = 116, rowH = 86, envH = 62, titleH = 28, tagW = 54, pad = 8;
 
 static juce::Font font (float height, int style = juce::Font::plain) { return juce::Font (juce::FontOptions (height, style)); }
 static juce::Font monoFont (float height) { return juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), height, juce::Font::bold)); }
@@ -405,7 +406,7 @@ int Panel::Row::width() const
 {
     if (envelope != nullptr)
         return 4 * knobW;
-    int w = 0;
+    int w = tag.isNotEmpty() ? tagW : 0;
     for (const auto& c : controls)
         w += c->width;
     return w;
@@ -416,6 +417,8 @@ Panel::Panel (EvoCtrlProcessor& proc, const layout::Panel& def) : title (juce::S
     for (const auto& rowDef : def.rows)
     {
         Row row;
+        row.tag = juce::String::fromUTF8 (rowDef.tag != nullptr ? rowDef.tag : "");
+        row.tagSub = juce::String::fromUTF8 (rowDef.tagSub != nullptr ? rowDef.tagSub : "");
         if (rowDef.adsr >= 0)
             addAndMakeVisible (*(row.envelope = std::make_unique<EnvelopeView> (proc, rowDef.adsr)));
 
@@ -495,6 +498,18 @@ int Panel::preferredHeight() const
 void Panel::paint (juce::Graphics& g)
 {
     drawPanel (g, getLocalBounds().toFloat(), title);
+    for (const auto& row : rows)
+    {
+        if (row.tag.isEmpty())
+            continue;
+        auto r = row.tagArea;
+        g.setColour (colours::silk);
+        g.setFont (spaced (13.0f));
+        g.drawText (row.tag, r.removeFromTop (r.getHeight() / 2 + 2), juce::Justification::bottomLeft);
+        g.setColour (colours::yellow);
+        g.setFont (spaced (10.0f));
+        g.drawText (row.tagSub, r, juce::Justification::topLeft);
+    }
 }
 
 void Panel::resized()
@@ -516,7 +531,13 @@ void Panel::resized()
             continue;
         }
 
-        int x = (getWidth() - row.width()) / 2;
+        // Named rows (OSC 1, LFO 2...) line up on the left like silkscreened rows; the others are centred.
+        int x = row.tag.isNotEmpty() ? pad * 2 : (getWidth() - row.width()) / 2;
+        if (row.tag.isNotEmpty())
+        {
+            row.tagArea = { x, y, tagW, rowH - 20 };
+            x += tagW;
+        }
         for (auto& c : row.controls)
         {
             auto slot = juce::Rectangle<int> (x, y, c->width, rowH);
@@ -536,63 +557,57 @@ void Panel::resized()
 }
 
 //==============================================================================
-SynthTab::SynthTab (EvoCtrlProcessor& proc, const layout::Tab& tab)
+SynthTab::SynthTab (EvoCtrlProcessor& proc, const layout::Tab& tab, const SynthTab* like) : scaleLike (like)
 {
-    for (const auto& columnDef : tab.columns)
+    for (const auto& rowDef : tab.rows)
     {
-        auto& column = columns.emplace_back();
-        for (const auto& panelDef : columnDef)
-            content.addAndMakeVisible (*column.emplace_back (std::make_unique<Panel> (proc, panelDef)));
+        auto& row = rows.emplace_back();
+        for (const auto& panelDef : rowDef)
+            content.addAndMakeVisible (*row.emplace_back (std::make_unique<Panel> (proc, panelDef)));
     }
-    viewport.setViewedComponent (&content, false);
-    addAndMakeVisible (viewport);
+
+    // Natural layout: each row of panels is stretched to the widest row, so the panel edges line up.
+    std::vector<int> rowWidths;
+    int naturalW = 0;
+    for (const auto& row : rows)
+    {
+        int w = -pad;
+        for (const auto& p : row)
+            w += p->preferredWidth() + pad;
+        rowWidths.push_back (w);
+        naturalW = juce::jmax (naturalW, w);
+    }
+
+    int y = pad * 2;
+    for (size_t r = 0; r < rows.size(); ++r)
+    {
+        auto& row = rows[r];
+        int h = 0;
+        for (const auto& p : row)
+            h = juce::jmax (h, p->preferredHeight());
+        const int gaps = pad * ((int) row.size() - 1);
+        const double stretch = (double) (naturalW - gaps) / (double) (rowWidths[r] - gaps);
+
+        int x = pad;
+        for (size_t i = 0; i < row.size(); ++i)
+        {
+            const int w = i + 1 == row.size() ? naturalW + pad - x : juce::roundToInt (row[i]->preferredWidth() * stretch);
+            row[i]->setBounds (x, y, w, h);
+            x += w + pad;
+        }
+        y += h + pad * 2;
+    }
+    content.setSize (naturalW + pad * 2, y);
+    addAndMakeVisible (content);
 }
 
 void SynthTab::resized()
 {
-    viewport.setBounds (getLocalBounds());
-
-    // Natural size first, then columns and panels stretch to fill the page like a hardware front panel.
-    std::vector<int> widths;
-    int naturalW = pad, naturalH = 0;
-    for (const auto& column : columns)
-    {
-        int w = 0, h = -pad;
-        for (const auto& p : column)
-        {
-            w = juce::jmax (w, p->preferredWidth());
-            h += p->preferredHeight() + pad;
-        }
-        widths.push_back (w);
-        naturalW += w + pad;
-        naturalH = juce::jmax (naturalH, h);
-    }
-
-    const int W = juce::jmax (naturalW, getWidth()), H = juce::jmax (naturalH + 2 * pad, getHeight());
-    const int gaps = pad * ((int) columns.size() + 1);
-    const double sx = (double) (W - gaps) / (double) (naturalW - gaps);
-
-    int x = pad;
-    for (size_t c = 0; c < columns.size(); ++c)
-    {
-        auto& column = columns[c];
-        const int w = c + 1 == columns.size() ? W - pad - x : juce::roundToInt (widths[c] * sx);
-        int prefSum = 0;
-        for (const auto& p : column)
-            prefSum += p->preferredHeight();
-        const int available = H - 2 * pad - pad * ((int) column.size() - 1);
-
-        int y = pad;
-        for (size_t i = 0; i < column.size(); ++i)
-        {
-            const int h = i + 1 == column.size() ? H - pad - y
-                                                 : juce::roundToInt ((double) column[i]->preferredHeight() * available / prefSum);
-            column[i]->setBounds (x, y, w, h);
-            y += h + pad;
-        }
-        x += w + pad;
-    }
-    content.setSize (W, H);
+    const auto& ref = (scaleLike != nullptr ? scaleLike->content : content).getLocalBounds();
+    const float s = juce::jmin ((float) getWidth() / (float) ref.getWidth(), (float) getHeight() / (float) ref.getHeight());
+    content.setTransform (juce::AffineTransform::scale (s).translated (((float) getWidth() - (float) content.getWidth() * s) / 2.0f,
+                                                                       scaleLike != nullptr ? 0.0f // smaller pages sit at the top
+                                                                                            : ((float) getHeight() - (float) content.getHeight() * s) / 2.0f));
 }
 
 //==============================================================================
@@ -1026,6 +1041,7 @@ EvoCtrlEditor::EvoCtrlEditor (EvoCtrlProcessor& p) : juce::AudioProcessorEditor 
     for (auto* l : { &inLabel, &outLabel, &chLabel })
         l->setJustificationType (juce::Justification::centredRight);
     statusLabel.setMinimumHorizontalScale (0.8f);
+    statusLabel.setFont (font (13.5f));
 
     for (int c = 1; c <= 16; ++c)
         channelBox.addItem (juce::String (c), c);
@@ -1055,9 +1071,10 @@ EvoCtrlEditor::EvoCtrlEditor (EvoCtrlProcessor& p) : juce::AudioProcessorEditor 
     const auto clear = juce::Colours::transparentBlack;
     tabs.setTabBarDepth (38);
     tabs.setOutline (0);
-    for (const auto& t : layout::tabs())
-        tabs.addTab (t.name, clear, new SynthTab (proc, t), true);
+    auto* synth = new SynthTab (proc, layout::tabs()[0]);
+    tabs.addTab (layout::tabs()[0].name, clear, synth, true);
     tabs.addTab ("SEQUENCER", clear, seqPage = new SequencerPage (proc), true);
+    tabs.addTab (layout::tabs()[1].name, clear, new SynthTab (proc, layout::tabs()[1], synth), true);
     tabs.addTab ("PATCHES", clear, patchesPage = new PatchesPage (proc), true);
     tabs.addTab ("SETUP", clear, new SetupPage (proc), true);
     tabs.addTab ("MONITOR", clear, monitorPage = new MonitorPage (proc), true);
@@ -1065,8 +1082,8 @@ EvoCtrlEditor::EvoCtrlEditor (EvoCtrlProcessor& p) : juce::AudioProcessorEditor 
     setLookAndFeel (&laf); // last: slider text boxes copy their colours when the look-and-feel reaches them
 
     setResizable (true, true);
-    setResizeLimits (1040, 640, 2560, 1600);
-    setSize (1240, 800);
+    setResizeLimits (1000, 640, 2880, 1800);
+    setSize (1480, 900);
     for (int i = 0; i < evo::numParams; ++i)
         seen[(size_t) i] = proc.param (i).get();
     timerCallback();
@@ -1135,7 +1152,7 @@ void EvoCtrlEditor::timerCallback()
         return;
     lastChange = c;
 
-    statusLabel.setText (proc.status.text, juce::dontSendNotification);
+    statusLabel.setText (proc.status.text.upToFirstOccurrenceOf ("\n", false, false), juce::dontSendNotification);
     statusLabel.setTooltip (proc.status.text);
     seqPage->refresh();
     patchesPage->refresh();
@@ -1164,10 +1181,24 @@ void EvoCtrlEditor::paint (juce::Graphics& g)
         g.drawHorizontalLine (y, 0.0f, w);
     g.setColour (juce::Colours::white.withAlpha (0.1f));
     g.drawHorizontalLine (chassisH - 1, 0.0f, w);
-    drawScrew (g, { 12.0f, 12.0f });
-    drawScrew (g, { w - 12.0f, 12.0f });
-    drawScrew (g, { 12.0f, (float) tabs.getY() - 10.0f });
-    drawScrew (g, { w - 12.0f, (float) tabs.getY() - 10.0f });
+    const float sx = (float) woodW + 12.0f;
+    drawScrew (g, { sx, 12.0f });
+    drawScrew (g, { w - sx, 12.0f });
+    drawScrew (g, { sx, (float) tabs.getY() - 10.0f });
+    drawScrew (g, { w - sx, (float) tabs.getY() - 10.0f });
+
+    for (const bool left : { true, false })
+    {
+        const auto cheek = (left ? getLocalBounds().removeFromLeft (woodW) : getLocalBounds().removeFromRight (woodW)).toFloat();
+        juce::ColourGradient wood (juce::Colour (0xff2e170b), cheek.getX(), 0.0f, juce::Colour (0xff2a1409), cheek.getRight(), 0.0f, false);
+        wood.addColour (left ? 0.4 : 0.6, juce::Colour (0xff7a4524));
+        wood.addColour (0.5, juce::Colour (0xff9a5a30));
+        g.setGradientFill (wood);
+        g.fillRect (cheek);
+        g.setColour (juce::Colours::black.withAlpha (0.12f)); // grain
+        for (float gy = 0.0f; gy < h; gy += 7.0f)
+            g.drawLine (cheek.getX(), gy, cheek.getRight(), gy + 3.0f, 0.6f);
+    }
 
     auto area = lcd;
     auto logo = area.removeFromLeft (170).reduced (0, 6);
@@ -1214,7 +1245,7 @@ void EvoCtrlEditor::paint (juce::Graphics& g)
 
 void EvoCtrlEditor::resized()
 {
-    auto r = getLocalBounds();
+    auto r = getLocalBounds().reduced (woodW, 0);
     auto bar = r.removeFromTop (96).reduced (pad * 3, 14);
     lcd = bar.removeFromLeft (560);
     bar.removeFromLeft (pad * 2);
@@ -1236,7 +1267,7 @@ void EvoCtrlEditor::resized()
     getBtn.setBounds (actions.removeFromRight (132).reduced (2, 0));
     testBtn.setBounds (actions.removeFromRight (60).reduced (2, 0));
     statusDot = actions.removeFromLeft (22).withSizeKeepingCentre (10, 10);
-    statusLabel.setBounds (actions);
+    statusLabel.setBounds (actions.withSizeKeepingCentre (actions.getWidth(), 18)); // one line; the full text is in the tooltip
 
     tabs.setBounds (r.withTrimmedLeft (pad).withTrimmedRight (pad));
 }

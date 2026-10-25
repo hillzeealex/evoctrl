@@ -98,8 +98,8 @@ int main()
         }
     };
     for (const auto& tab : layout::tabs())
-        for (const auto& column : tab.columns)
-            for (const auto& panel : column)
+        for (const auto& row : tab.rows)
+            for (const auto& panel : row)
                 count (panel);
     count (layout::seqSettings());
     for (int i : layout::seqDests)

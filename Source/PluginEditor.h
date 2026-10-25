@@ -55,22 +55,26 @@ private:
     {
         std::vector<std::unique_ptr<Control>> controls;
         std::unique_ptr<EnvelopeView> envelope;
+        juce::String tag, tagSub;
+        juce::Rectangle<int> tagArea;
         int width() const;
     };
     juce::String title;
     std::vector<Row> rows;
 };
 
+// A page laid out once at its natural size, then scaled as a whole to the window (like a hardware panel).
 class SynthTab : public juce::Component
 {
 public:
-    SynthTab (EvoCtrlProcessor&, const layout::Tab&);
+    // scaleLike: another page whose scale this one copies, so knobs keep one size across pages.
+    SynthTab (EvoCtrlProcessor&, const layout::Tab&, const SynthTab* scaleLike = nullptr);
     void resized() override;
 
 private:
-    juce::Viewport viewport;
+    const SynthTab* scaleLike;
     juce::Component content;
-    std::vector<std::vector<std::unique_ptr<Panel>>> columns;
+    std::vector<std::vector<std::unique_ptr<Panel>>> rows;
 };
 
 class SequencerPage : public juce::Component

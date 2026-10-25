@@ -104,11 +104,13 @@ gère que le son.
 - **Afficheur LED** (barre du haut) : comme sur l'Evolver, il affiche le numéro de programme puis, pendant ~2 s,
   la valeur du dernier paramètre bougé (souris, automation Live ou potard de l'Evolver), avec son nom et sa valeur
   en clair à côté.
-- **OSC | MIX, FILTER | AMP, LFO | ENV, MATRIX, FX :** les 128 paramètres répartis par section. Les knobs ont un
-  anneau de LEDs (allumé depuis le centre pour les bipolaires), les listes (formes, sources, destinations…) sont des
-  menus, les on/off des touches à LED, et les enveloppes ont un graphe ADSR. Double-clic = valeur par défaut,
+- **SYNTH :** tout l'instrument sur un seul panneau, comme une façade : oscillateurs, common, filtre et ampli
+  (avec graphes d'enveloppe), 4 LFO, enveloppe 3, matrice de modulation, delay / feedback / distorsion. La page
+  s'agrandit d'un bloc avec la fenêtre. Knobs à anneau de LEDs (allumé depuis le centre pour les bipolaires), menus
+  pour les listes (formes, sources, destinations…), touches à LED pour les on/off. Double-clic = valeur par défaut,
   Cmd/Ctrl-glisser = réglage fin, molette OK. Le survol donne le numéro de paramètre, la plage brute et le CC.
-- **Sequencer :** grille 4 × 16 (0–100) avec destinations, tempo, division et trigger. Les valeurs > 100 reçues
+- **TWEAKS :** réglages rares, contrôleurs (vélocité, molette, pression, breath, pédale) et entrée externe.
+- **SEQUENCER :** grille 4 × 16 (0–100) avec destinations, tempo, division et trigger. Les valeurs > 100 reçues
   (rst / off, codes non documentés) sont conservées et affichées en gris.
 - **Patches :** nom (16 caractères ASCII), lecture/écriture banque + programme (l'écriture demande confirmation),
   import/export `.syx`, bibliothèque locale avec recherche, tags et favoris.

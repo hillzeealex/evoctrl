@@ -1,0 +1,315 @@
+#include "PluginProcessor.h"
+#include "PluginEditor.h"
+
+static juce::String paramId (int i) { return "p" + juce::String (i).paddedLeft ('0', 3); }
+
+EvoCtrlProcessor::EvoCtrlProcessor()
+    : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true))
+{
+    for (const auto& p : evo::params)
+    {
+        auto* param = new juce::AudioParameterInt (
+            juce::ParameterID { paramId (p.index), 1 }, p.name, p.min, p.max, p.def,
+            juce::AudioParameterIntAttributes().withStringFromValueFunction (
+                [&p] (int v, int) { return juce::String (evo::valueToText (p, v)); }));
+        addParameter (param);
+        param->addListener (this);
+        params[(size_t) p.index] = param;
+        lastValue[(size_t) p.index] = p.def;
+    }
+
+    link.onReceived = [this] { triggerAsyncUpdate(); };
+}
+
+EvoCtrlProcessor::~EvoCtrlProcessor()
+{
+    for (auto* p : params)
+        p->removeListener (this);
+    link.onReceived = nullptr;
+    cancelPendingUpdate();
+}
+
+// Any thread (host automation arrives on the audio thread): atomics only.
+void EvoCtrlProcessor::parameterValueChanged (int index, float normalised)
+{
+    const auto& p = evo::params[(size_t) index];
+    const int v = juce::roundToInt ((float) p.min + normalised * (float) (p.max - p.min));
+    if (lastValue[(size_t) index].exchange (v) == v || muteOutgoing.load())
+        return;
+    link.queueParam (index, v);
+}
+
+void EvoCtrlProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+{
+    buffer.clear();
+
+    if (! viaAbleton.load())
+        return; // incoming notes pass through untouched
+
+    // Fallback: params with a documented CC go out through the host. Scaling is linear (unverified, see spec §0).
+    const int channel = midiChannel.load();
+    link.drainParams (32, [&] (int i, int v)
+    {
+        const auto& p = evo::params[(size_t) i];
+        if (p.cc >= 0)
+            midi.addEvent (juce::MidiMessage::controllerEvent (channel, p.cc, juce::roundToInt (v * 127.0 / p.max)), 0);
+    });
+}
+
+void EvoCtrlProcessor::setViaAbleton (bool b)
+{
+    viaAbleton = b;
+    link.directParams = ! b;
+}
+
+void EvoCtrlProcessor::setStatus (StatusKind kind, const juce::String& text)
+{
+    status = { kind, text };
+    ++changeCounter;
+}
+
+juce::String EvoCtrlProcessor::connect (const juce::String& in, const juce::String& out)
+{
+    inputId = in;
+    outputId = out;
+    const auto error = link.open (in, out);
+
+    if (error.isNotEmpty())
+        setStatus (StatusKind::Error, error);
+    else if (! link.hasOutput())
+        setStatus (StatusKind::Idle, "No MIDI output selected");
+    else if (! link.hasInput())
+        setStatus (StatusKind::Warning, "Output only: no MIDI input, knob moves and dumps won't be received");
+    else
+        setStatus (StatusKind::Warning, "Ports open - press Test to check the Evolver answers");
+    return error;
+}
+
+void EvoCtrlProcessor::requestEditBuffer (bool apply)
+{
+    if (! link.hasOutput() || ! link.hasInput())
+        return setStatus (StatusKind::Error, "Select both a MIDI input and output first");
+
+    pendingTest = true;
+    applyNextEditBuffer = apply;
+    link.queueSysex (evo::requestEditBuffer());
+    setStatus (StatusKind::Warning, "Waiting for the Evolver...");
+    startTimer (2000);
+}
+
+void EvoCtrlProcessor::timerCallback()
+{
+    stopTimer();
+    if (pendingTest || pendingProgramRead)
+        setStatus (StatusKind::Error, "No answer from the Evolver. Check cables/ports and its globals: "
+                                      "MIDI Rec = ALL, MIDI Xmit = ALL (see Setup tab)");
+    pendingTest = pendingProgramRead = false;
+}
+
+void EvoCtrlProcessor::sendToEvolver()
+{
+    if (! link.hasOutput())
+        return setStatus (StatusKind::Error, "No MIDI output open");
+    link.queueSysex (evo::editBufferDump (capturePatch()));
+    setStatus (StatusKind::Ok, "Patch sent to the Evolver edit buffer");
+}
+
+void EvoCtrlProcessor::readProgram (int b, int p)
+{
+    if (! link.hasOutput() || ! link.hasInput())
+        return setStatus (StatusKind::Error, "Select both a MIDI input and output first");
+    bank = b;
+    program = p;
+    pendingProgramRead = true;
+    link.queueSysex (evo::requestProgram (b, p));
+    link.queueSysex (evo::requestName (b, p));
+    setStatus (StatusKind::Warning, "Reading program...");
+    startTimer (2000);
+}
+
+void EvoCtrlProcessor::writeProgram (int b, int p)
+{
+    if (! link.hasOutput())
+        return setStatus (StatusKind::Error, "No MIDI output open");
+    bank = b;
+    program = p;
+    link.queueSysex (evo::programDump (b, p, capturePatch()));
+    link.queueSysex (evo::nameDump (b, p, patchName.toStdString())); // format documented, store-on-receive unverified
+    setStatus (StatusKind::Ok, "Written to bank " + juce::String (b + 1) + " program " + juce::String (p + 1));
+}
+
+void EvoCtrlProcessor::handleAsyncUpdate()
+{
+    using K = evo::Parsed::Kind;
+
+    for (const auto& m : link.popReceived())
+    {
+        switch (m.kind)
+        {
+            case K::ProgramParam:
+                if (m.index < evo::numParams)
+                    setParamFromDevice (m.index, m.value);
+                break;
+
+            case K::SeqParam:
+                if (m.index < evo::numSeqSteps)
+                {
+                    seq[(size_t) m.index] = m.value;
+                    ++changeCounter;
+                }
+                break;
+
+            case K::EditBuffer:
+                if (pendingTest)
+                {
+                    stopTimer();
+                    pendingTest = false;
+                    if (applyNextEditBuffer)
+                        applyPatch (m.patch, false);
+                    setStatus (StatusKind::Ok, applyNextEditBuffer ? "Edit buffer received from the Evolver"
+                                                                   : "Evolver connected and answering");
+                }
+                break;
+
+            case K::Program:
+                if (pendingProgramRead && m.index == bank && m.value == program)
+                {
+                    stopTimer();
+                    pendingProgramRead = false;
+                    applyPatch (m.patch, true); // so the Evolver plays what the editor shows
+                    setStatus (StatusKind::Ok, "Program B" + juce::String (bank + 1) + " P" + juce::String (program + 1) + " loaded");
+                }
+                break;
+
+            case K::Name:
+                if (m.index == bank && m.value == program)
+                {
+                    patchName = m.name;
+                    ++changeCounter;
+                }
+                break;
+        }
+    }
+}
+
+void EvoCtrlProcessor::setParamFromDevice (int index, int value)
+{
+    const auto& p = evo::params[(size_t) index];
+    muteOutgoing = true; // listener fires synchronously below: record the value, don't echo it back
+    params[(size_t) index]->setValueNotifyingHost (params[(size_t) index]->convertTo0to1 ((float) juce::jlimit (p.min, p.max, value)));
+    muteOutgoing = false;
+}
+
+evo::Patch EvoCtrlProcessor::capturePatch() const
+{
+    evo::Patch patch;
+    for (int i = 0; i < evo::numParams; ++i)
+        patch.params[(size_t) i] = (uint8_t) params[(size_t) i]->get();
+    for (int s = 0; s < evo::numSeqSteps; ++s)
+        patch.seq[(size_t) s] = (uint8_t) seq[(size_t) s].load();
+    return patch;
+}
+
+void EvoCtrlProcessor::applyPatch (const evo::Patch& patch, bool sendToDevice)
+{
+    for (int i = 0; i < evo::numParams; ++i)
+        setParamFromDevice (i, patch.params[(size_t) i]);
+    for (int s = 0; s < evo::numSeqSteps; ++s)
+        seq[(size_t) s] = patch.seq[(size_t) s];
+    ++changeCounter;
+
+    if (sendToDevice && link.hasOutput())
+        link.queueSysex (evo::editBufferDump (patch));
+}
+
+void EvoCtrlProcessor::setSeqStep (int step, int value)
+{
+    seq[(size_t) step] = value;
+    link.queueSeq (step, value);
+}
+
+bool EvoCtrlProcessor::importSyx (const juce::File& f)
+{
+    const auto added = library.import (f);
+    if (added.empty())
+    {
+        setStatus (StatusKind::Error, "No Evolver program found in " + f.getFileName());
+        return false;
+    }
+    patchName = f.getFileNameWithoutExtension();
+    applyPatch (added.front(), true);
+    setStatus (StatusKind::Ok, juce::String ((int) added.size()) + " patch(es) imported into the library, first one loaded");
+    return true;
+}
+
+bool EvoCtrlProcessor::exportSyx (const juce::File& f) const
+{
+    return PatchLibrary::writeSyx (f, evo::editBufferDump (capturePatch()));
+}
+
+void EvoCtrlProcessor::getStateInformation (juce::MemoryBlock& dest)
+{
+    juce::ValueTree state ("EvoCtrl");
+    for (auto* p : params)
+        state.setProperty (p->paramID, p->get(), nullptr);
+
+    juce::StringArray steps;
+    for (const auto& s : seq)
+        steps.add (juce::String (s.load()));
+
+    state.setProperty ("seq", steps.joinIntoString (","), nullptr)
+         .setProperty ("inputId", inputId, nullptr)
+         .setProperty ("outputId", outputId, nullptr)
+         .setProperty ("channel", midiChannel.load(), nullptr)
+         .setProperty ("viaAbleton", viaAbleton.load(), nullptr)
+         .setProperty ("intervalMs", link.intervalMs.load(), nullptr)
+         .setProperty ("resendOnLoad", resendOnLoad, nullptr)
+         .setProperty ("patchName", patchName, nullptr)
+         .setProperty ("bank", bank, nullptr)
+         .setProperty ("program", program, nullptr);
+
+    if (auto xml = state.createXml())
+        copyXmlToBinary (*xml, dest);
+}
+
+void EvoCtrlProcessor::setStateInformation (const void* data, int size)
+{
+    const auto xml = getXmlFromBinary (data, size);
+    if (xml == nullptr)
+        return;
+    const auto state = juce::ValueTree::fromXml (*xml);
+    if (! state.hasType ("EvoCtrl"))
+        return;
+
+    evo::Patch patch = capturePatch();
+    for (int i = 0; i < evo::numParams; ++i)
+        patch.params[(size_t) i] = (uint8_t) (int) state.getProperty (params[(size_t) i]->paramID, patch.params[(size_t) i]);
+
+    auto steps = juce::StringArray::fromTokens (state["seq"].toString(), ",", {});
+    for (int s = 0; s < evo::numSeqSteps && s < steps.size(); ++s)
+        patch.seq[(size_t) s] = (uint8_t) steps[s].getIntValue();
+
+    midiChannel = juce::jlimit (1, 16, (int) state.getProperty ("channel", 1));
+    setViaAbleton (state["viaAbleton"]);
+    link.intervalMs = juce::jlimit (0, 50, (int) state.getProperty ("intervalMs", 1));
+    resendOnLoad = state["resendOnLoad"];
+    patchName = state["patchName"].toString();
+    bank = state["bank"];
+    program = state["program"];
+
+    applyPatch (patch, false);
+    connect (state["inputId"].toString(), state["outputId"].toString());
+
+    if (resendOnLoad && link.hasOutput())
+        sendToEvolver();
+}
+
+juce::AudioProcessorEditor* EvoCtrlProcessor::createEditor()
+{
+    return new EvoCtrlEditor (*this);
+}
+
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+{
+    return new EvoCtrlProcessor();
+}

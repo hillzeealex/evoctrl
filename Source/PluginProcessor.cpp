@@ -28,6 +28,19 @@ EvoCtrlProcessor::EvoCtrlProcessor()
             originals[(size_t) (m.index - evo::firstUserWave)] = m.wave;
     recordOriginals();   // first run: whatever was read from the Evolver before any edit
 
+    for (const auto& m : PatchLibrary::readSyx (wavesFolder().getParentDirectory().getChildFile ("program-names.syx")))
+        if (m.kind == evo::Parsed::Kind::Name && m.index < 4 && m.value < 128)
+        {
+            programNames[(size_t) (m.index * 128 + m.value)] = m.name;
+            nameKnown[(size_t) (m.index * 128 + m.value)] = true;
+        }
+    nameWatchdog.fn = [this]
+    {
+        if (std::exchange (nameRetried, ! nameRetried))
+            ++nameNext;
+        requestNextName();
+    };
+
     waveWatchdog.fn = [this]   // no answer: ask once more, then skip that wave
     {
         if (std::exchange (waveRetried, ! waveRetried))
@@ -42,6 +55,7 @@ EvoCtrlProcessor::~EvoCtrlProcessor()
         p->removeListener (this);
     link.onReceived = nullptr;
     waveWatchdog.stopTimer();
+    nameWatchdog.stopTimer();
     cancelPendingUpdate();
 }
 
@@ -203,12 +217,16 @@ void EvoCtrlProcessor::handleAsyncUpdate()
                 break;
 
             case K::Main:
-                if (pendingMain)
+                if (pendingMain || pendingGlobals)
                 {
-                    pendingMain = false;
+                    for (int i = 0; i < evo::numMainParams; ++i)
+                        globals[(size_t) i] = m.main[(size_t) i];
+                    globalsKnown = true;
                     bank = m.index;
                     program = m.value;
-                    nameAfterDump = true; // asking now would cut into the edit buffer dump the Evolver is sending
+                    if (pendingMain)
+                        nameAfterDump = true; // asking now would cut into the edit buffer dump the Evolver is sending
+                    pendingMain = pendingGlobals = false;
                     ++changeCounter;
                 }
                 break;
@@ -234,11 +252,20 @@ void EvoCtrlProcessor::handleAsyncUpdate()
                 break;
 
             case K::Name:
-                if (m.index == bank && m.value == program)
+                if (m.index < 4 && m.value < 128)
                 {
-                    patchName = m.name;
-                    ++changeCounter;
+                    programNames[(size_t) (m.index * 128 + m.value)] = m.name;
+                    nameKnown[(size_t) (m.index * 128 + m.value)] = true;
                 }
+                if (m.index == bank && m.value == program)
+                    patchName = m.name;
+                if (nameNext >= 0 && m.index == nameBank && m.value == nameNext)
+                {
+                    ++nameNext;
+                    nameRetried = false;
+                    requestNextName();
+                }
+                ++changeCounter;
                 break;
         }
     }
@@ -250,6 +277,88 @@ void EvoCtrlProcessor::setParamFromDevice (int index, int value)
     muteOutgoing = true; // listener fires synchronously below: record the value, don't echo it back
     params[(size_t) index]->setValueNotifyingHost (params[(size_t) index]->convertTo0to1 ((float) juce::jlimit (p.min, p.max, value)));
     muteOutgoing = false;
+}
+
+void EvoCtrlProcessor::readGlobals()
+{
+    if (! link.hasOutput() || ! link.hasInput())
+        return;
+    pendingGlobals = true;
+    link.queueSysex (evo::requestMainParams());
+}
+
+void EvoCtrlProcessor::setGlobal (int index, int value)
+{
+    if (! link.hasOutput())
+        return setStatus (StatusKind::Error, "No MIDI output open");
+    link.queueSysex (evo::mainParam (index, value));
+    globals[(size_t) index] = value;
+    ++changeCounter;
+}
+
+void EvoCtrlProcessor::selectProgram (int b, int p)
+{
+    if (! link.hasOutput() || ! link.hasInput())
+        return setStatus (StatusKind::Error, "Select both a MIDI input and output first");
+    // Main params 1 (bank) and 0 (program) switch the Evolver like its own knob (verified on hardware); the
+    // edit buffer request queued right after then returns that program's sound.
+    link.queueSysex (evo::mainParam (1, b));
+    link.queueSysex (evo::mainParam (0, p));
+    bank = b;
+    program = p;
+    patchName = programNames[(size_t) (b * 128 + p)];
+    requestEditBuffer (true);
+}
+
+void EvoCtrlProcessor::startStopSequencer()
+{
+    if (! link.hasOutput())
+        return setStatus (StatusKind::Error, "No MIDI output open");
+    link.queueSysex (evo::startStop());
+}
+
+void EvoCtrlProcessor::resetSequencer()
+{
+    if (! link.hasOutput())
+        return setStatus (StatusKind::Error, "No MIDI output open");
+    link.queueSysex (evo::resetSequencer());
+}
+
+void EvoCtrlProcessor::readNames (int b)
+{
+    if (! link.hasOutput() || ! link.hasInput())
+        return setStatus (StatusKind::Error, "Select both a MIDI input and output first");
+    nameBank = b;
+    nameNext = 0;
+    nameRetried = false;
+    requestNextName();
+}
+
+void EvoCtrlProcessor::requestNextName()
+{
+    if (nameNext >= 128)
+    {
+        nameNext = -1;
+        nameWatchdog.stopTimer();
+        saveNames();
+        return setStatus (StatusKind::Ok, "Bank " + juce::String (nameBank + 1) + " names read");
+    }
+    link.queueSysex (evo::requestName (nameBank, nameNext));
+    nameWatchdog.startTimer (600);
+    setStatus (StatusKind::Warning, "Reading bank " + juce::String (nameBank + 1) + " names " + juce::String (nameNext + 1) + " / 128...");
+}
+
+void EvoCtrlProcessor::saveNames() const
+{
+    evo::Bytes all;
+    for (int i = 0; i < 512; ++i)
+        if (nameKnown[(size_t) i])
+        {
+            const auto d = evo::nameDump (i / 128, i % 128, programNames[(size_t) i].toStdString());
+            all.insert (all.end(), d.begin(), d.end());
+        }
+    wavesFolder().getParentDirectory().createDirectory();
+    PatchLibrary::writeSyx (wavesFolder().getParentDirectory().getChildFile ("program-names.syx"), all);
 }
 
 juce::File EvoCtrlProcessor::wavesFolder()

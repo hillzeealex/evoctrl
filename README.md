@@ -118,6 +118,13 @@ gère que le son.
   Reverse / Undo, import d'un .wav d'un cycle. *Send to slot* écrit dans un emplacement 97–128 (l'Evolver le garde en
   mémoire : en mode Live l'envoi se fait à la fin de chaque geste, pas en continu). *Play on* sélectionne
   l'emplacement sur l'OSC 3 ou 4.
+- **Patches → Evolver memory (4 banques) :** les 128 programmes de chaque banque avec leur nom (lus dans l'Evolver,
+  gardés dans `Documents/EvoCtrl/program-names.syx`). *Load on Evolver* (ou double-clic) bascule l'Evolver lui-même sur
+  ce programme et le charge ici ; *Write here…* y écrit le patch courant (avec confirmation).
+- **Setup → Evolver globals :** les réglages du menu Main de l'Evolver, lus à l'ouverture et modifiables d'ici
+  (volume, transposition, accord fin, BPM, MIDI Rec / Xmit / canal, Poly Chain, MIDI Clock, …). Un bandeau signale ce
+  qui gêne EvoCtrl (Poly Chain ≠ Off, Rec / Xmit ≠ All) ; passer Rec ou Xmit ailleurs que sur All demande confirmation.
+- **Sequencer :** boutons *Start / Stop* et *Reset* du séquenceur interne de l'Evolver.
 - **Patches :** nom (16 caractères ASCII), lecture/écriture banque + programme (l'écriture demande confirmation),
   import/export `.syx`, bibliothèque locale avec recherche, tags et favoris.
 - **Setup :** chemin MIDI, intervalle d'envoi, option *renvoyer le patch au chargement du set*.

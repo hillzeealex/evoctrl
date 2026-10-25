@@ -28,10 +28,10 @@ struct Patch
 
 namespace cmd
 {
-    constexpr uint8_t programParam = 0x01, programDump = 0x02, editBufferDump = 0x03, requestProgram = 0x05,
-                      requestEditBuffer = 0x06, seqParam = 0x08, waveshapeDump = 0x0A, requestWaveshape = 0x0B,
+    constexpr uint8_t programParam = 0x01, programDump = 0x02, editBufferDump = 0x03, resetButton = 0x04, requestProgram = 0x05,
+                      requestEditBuffer = 0x06, seqParam = 0x08, mainParam = 0x09, waveshapeDump = 0x0A, requestWaveshape = 0x0B,
                       requestMain = 0x0E, mainDump = 0x0F,
-                      requestName = 0x10, nameDump = 0x11;
+                      requestName = 0x10, nameDump = 0x11, startStopButton = 0x12;
 }
 
 constexpr int packedPatchSize = 220;
@@ -79,6 +79,11 @@ inline Bytes nibbleMessage (uint8_t command, int index, int value)
 
 inline Bytes programParam (int index, int value) { return nibbleMessage (cmd::programParam, index, value); }
 inline Bytes seqParam (int step, int value)      { return nibbleMessage (cmd::seqParam, step, value); }
+// Main (global) parameters 0-14, p.47 / p.53: 0 program, 1 bank, ..., 12 MIDI Rec, 13 MIDI Xmit, 14 MIDI channel.
+constexpr int numMainParams = 15;
+inline Bytes mainParam (int index, int value)    { return nibbleMessage (cmd::mainParam, index, value); }
+inline Bytes startStop()                         { auto b = header (cmd::startStopButton); return end (b); }  // p.49
+inline Bytes resetSequencer()                    { auto b = header (cmd::resetButton); return end (b); }
 inline Bytes requestEditBuffer()                 { auto b = header (cmd::requestEditBuffer); return end (b); }
 inline Bytes requestWaveshape (int num)          { auto b = header (cmd::requestWaveshape); b.push_back ((uint8_t) (num & 0x7F)); return end (b); }
 inline Bytes requestMainParams()                 { auto b = header (cmd::requestMain); return end (b); }  // p.51
@@ -142,6 +147,7 @@ struct Parsed
     Patch patch {};
     std::string name;
     Waveshape wave {};  // Kind::Waveshape: index = wave number 0-127
+    std::array<int, 16> main {};  // Kind::Main: all main parameters (index = bank, value = program as well)
 };
 
 inline Patch patchFromPacked (const uint8_t* d)
@@ -186,9 +192,14 @@ inline std::optional<Parsed> parse (const uint8_t* d, size_t n)
             return r;
         }
         case cmd::mainDump:
+        {
             // 16 main params as LS/MS nibble pairs (p.48, p.53): #0 = program 0-127, #1 = bank 0-3.
             if (n != 32) return std::nullopt;
-            return Parsed { Parsed::Kind::Main, (d[2] | (d[3] << 4)) & 0x03, (d[0] | (d[1] << 4)) & 0x7F };
+            Parsed r { Parsed::Kind::Main, (d[2] | (d[3] << 4)) & 0x03, (d[0] | (d[1] << 4)) & 0x7F };
+            for (size_t i = 0; i < r.main.size(); ++i)
+                r.main[i] = d[2 * i] | (d[2 * i + 1] << 4);
+            return r;
+        }
         case cmd::nameDump:
         {
             if (n != (size_t) nameLength + 2) return std::nullopt;

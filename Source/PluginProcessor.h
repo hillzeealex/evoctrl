@@ -45,6 +45,21 @@ public:
     EvolverLink link;
     PatchLibrary library;
 
+    // Evolver globals (Main parameters 0-14), as last read or set. Message thread only.
+    std::array<int, evo::numMainParams> globals {};
+    bool globalsKnown = false;
+    void readGlobals();
+    void setGlobal (int index, int value);
+    void selectProgram (int bank, int prog);   // switches the Evolver itself to that program, then loads it here
+    void startStopSequencer();
+    void resetSequencer();
+
+    // Program names of the 4 banks (bank * 128 + program), read on demand and kept on disk. Message thread only.
+    std::array<juce::String, 512> programNames;
+    std::array<bool, 512> nameKnown {};
+    void readNames (int bank);                 // its 128 names, one request at a time
+    bool readingNames() const { return nameNext >= 0; }
+
     // WAVES tab. Message thread only. What was read from (or sent to) the Evolver, kept on disk between sessions.
     std::array<std::optional<evo::Waveshape>, evo::numWaves> waves;
     void readWaves (bool onlyMissing = false);          // one request at a time
@@ -87,6 +102,8 @@ private:
     void requestNextWave();
     void saveWaveCache() const;
     void recordOriginals();
+    void requestNextName();
+    void saveNames() const;
 
     std::array<juce::AudioParameterInt*, evo::numParams> params {};
     std::array<std::atomic<int>, evo::numParams> lastValue {};   // last value known on both sides: anti-echo + dedupe
@@ -104,6 +121,9 @@ private:
     Watchdog waveWatchdog;   // a wave that never answers is skipped
     int waveNext = -1;
     bool waveRetried = false, waveOnlyMissing = false;
+    Watchdog nameWatchdog;
+    int nameNext = -1, nameBank = 0;
+    bool nameRetried = false, pendingGlobals = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EvoCtrlProcessor)
 };

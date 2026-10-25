@@ -91,6 +91,7 @@ private:
     std::array<juce::ComboBox, 4> dests;
     std::array<std::unique_ptr<juce::ComboBoxParameterAttachment>, 4> destAttachments;
     std::array<juce::Slider, evo::numSeqSteps> steps;
+    juce::TextButton startBtn { "START / STOP" }, resetBtn { "RESET" };
     juce::Label help;
     juce::Rectangle<int> grid;
 };
@@ -174,12 +175,36 @@ private:
     juce::TextEditor log;
 };
 
+// The Evolver's own memory: 4 banks x 128 programs, with names read from it.
+class BankBrowser : public juce::Component, private juce::ListBoxModel
+{
+public:
+    explicit BankBrowser (EvoCtrlProcessor&);
+    void refresh();
+    void shown() { showBank (proc.bank); }   // the page became visible: open on the current program's bank
+    void resized() override;
+
+private:
+    int getNumRows() override { return 128; }
+    void paintListBoxItem (int row, juce::Graphics&, int w, int h, bool selected) override;
+    void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override { load (row); }
+    void showBank (int b);
+    void load (int row);
+
+    EvoCtrlProcessor& proc;
+    std::array<juce::TextButton, 4> bankButtons;
+    juce::ListBox list { "programs", this };
+    juce::TextButton readNamesBtn { "READ NAMES" }, loadBtn { "LOAD ON EVOLVER" }, writeBtn { "WRITE HERE..." };
+    int bank = 0;
+};
+
 class PatchesPage : public juce::Component, private juce::ListBoxModel
 {
 public:
     explicit PatchesPage (EvoCtrlProcessor&);
     void refresh();
     void resized() override;
+    void visibilityChanged() override { if (isShowing()) banks.shown(); }  // children get no callback on tab switches
 
 private:
     int getNumRows() override { return (int) visible.size(); }
@@ -191,9 +216,8 @@ private:
     void loadSelected();
 
     EvoCtrlProcessor& proc;
-    juce::GroupComponent deviceGroup { {}, "Evolver memory" }, fileGroup { {}, "Files" }, libGroup { {}, "Library" };
-    juce::ComboBox bankBox, progBox;
-    juce::TextButton readBtn { "Read" }, writeBtn { "Write..." };
+    juce::GroupComponent deviceGroup { {}, "Evolver memory  -  4 banks" }, fileGroup { {}, "Files" }, libGroup { {}, "Library" };
+    BankBrowser banks;
     juce::Label nameLabel { {}, "Name" }, tagsLabel { {}, "Tags" };
     juce::TextEditor nameEditor, tagsEditor, searchEditor;
     juce::TextButton importBtn { "Import .syx..." }, exportBtn { "Export .syx..." };
@@ -209,10 +233,23 @@ class SetupPage : public juce::Component
 {
 public:
     explicit SetupPage (EvoCtrlProcessor&);
+    void refresh();
+    void paint (juce::Graphics&) override;
     void resized() override;
+    void visibilityChanged() override;
 
 private:
+    void changed (int index, int value);
+
     EvoCtrlProcessor& proc;
+    // Evolver globals (Main menu), index = main parameter number; only the ones shown here are set.
+    std::array<std::unique_ptr<juce::Slider>, evo::numMainParams> globalKnobs;
+    std::array<std::unique_ptr<juce::ComboBox>, evo::numMainParams> globalMenus;
+    std::array<juce::Label, evo::numMainParams> globalLabels;
+    juce::TextButton readGlobalsBtn { "READ FROM EVOLVER" };
+    juce::Label globalsStatus;
+    juce::Rectangle<int> globalsPanel, appPanel;
+    bool updating = false;
     juce::Label modeLabel { {}, "Parameter path" }, intervalLabel { {}, "Min. interval between messages (ms)" };
     juce::ComboBox modeBox;
     juce::Slider intervalSlider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
@@ -245,6 +282,7 @@ private:
     PatchesPage* patchesPage = nullptr;
     MonitorPage* monitorPage = nullptr;
     WavesPage* wavesPage = nullptr;
+    SetupPage* setupPage = nullptr;
     int lastChange = -1;
     juce::Rectangle<int> statusDot, lcd;
     std::array<int, evo::numParams> seen {};   // last polled values: the LED shows whichever parameter moved last

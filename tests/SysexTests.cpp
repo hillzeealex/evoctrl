@@ -64,6 +64,11 @@ int main()
     r = parse (main.data(), main.size());
     assert (r && r->kind == Parsed::Kind::Main && r->value == 66 && r->index == 2);
     assert (requestMainParams() == (Bytes { 0xF0, 0x01, 0x20, 0x01, 0x0E, 0xF7 }));
+    assert (r->main[0] == 66 && r->main[1] == 2 && r->main[2] == 0);
+    assert (mainParam (9, 0) == (Bytes { 0xF0, 0x01, 0x20, 0x01, 0x09, 9, 0, 0, 0xF7 }));   // Poly Chain off
+    assert (mainParam (4, 132) == (Bytes { 0xF0, 0x01, 0x20, 0x01, 0x09, 4, 0x04, 0x08, 0xF7 }));
+    assert (startStop() == (Bytes { 0xF0, 0x01, 0x20, 0x01, 0x12, 0xF7 }));
+    assert (resetSequencer() == (Bytes { 0xF0, 0x01, 0x20, 0x01, 0x04, 0xF7 }));
 
     // Waveshape: 300-byte dump (5 header + number + 293 packed + F7), full 16-bit round trip.
     Waveshape wave;

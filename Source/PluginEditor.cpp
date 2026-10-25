@@ -670,6 +670,13 @@ SequencerPage::SequencerPage (EvoCtrlProcessor& p) : proc (p), settings (p, layo
         addAndMakeVisible (s);
     }
 
+    startBtn.setTooltip ("Start or stop the Evolver's own sequencer (its Start/Stop button)");
+    startBtn.onClick = [this] { proc.startStopSequencer(); };
+    resetBtn.setTooltip ("Back to step 1 (its Reset button)");
+    resetBtn.onClick = [this] { proc.resetSequencer(); };
+    addAndMakeVisible (startBtn);
+    addAndMakeVisible (resetBtn);
+
     help.setText ("Steps 0-100 (24 = one octave on an oscillator destination). Values above 100 (rst / off) "
                   "received from the Evolver are kept and shown in white; dragging such a step overwrites it.",
                   juce::dontSendNotification);
@@ -714,6 +721,10 @@ void SequencerPage::resized()
 {
     auto r = getLocalBounds().reduced (pad);
     settings.setBounds (r.removeFromTop (settings.preferredHeight()));
+    auto transport = settings.getBounds().reduced (pad * 2).withTrimmedTop (titleH - pad).removeFromRight (160);
+    startBtn.setBounds (transport.removeFromTop (30));
+    transport.removeFromTop (8);
+    resetBtn.setBounds (transport.removeFromTop (30));
     r.removeFromTop (pad);
     help.setBounds (r.removeFromBottom (32));
     grid = r;
@@ -1287,32 +1298,105 @@ void WavesPage::resized()
 }
 
 //==============================================================================
-PatchesPage::PatchesPage (EvoCtrlProcessor& p) : proc (p)
+BankBrowser::BankBrowser (EvoCtrlProcessor& p) : proc (p), bank (p.bank)
 {
-    for (int b = 1; b <= 4; ++b)
-        bankBox.addItem ("Bank " + juce::String (b), b);
-    for (int i = 1; i <= 128; ++i)
-        progBox.addItem ("Program " + juce::String (i), i);
-
-    readBtn.setTooltip ("Load this program from the Evolver into the editor");
-    readBtn.onClick = [this] { proc.readProgram (bankBox.getSelectedId() - 1, progBox.getSelectedId() - 1); };
-
-    writeBtn.setTooltip ("Store the current patch (and its name) into this slot on the Evolver");
+    for (int b = 0; b < 4; ++b)
+    {
+        auto& btn = bankButtons[(size_t) b];
+        btn.setButtonText ("BANK " + juce::String (b + 1));
+        btn.setColour (juce::TextButton::textColourOnId, colours::yellow);
+        btn.setToggleState (b == bank, juce::dontSendNotification);
+        btn.onClick = [this, b] { showBank (b); };
+        addAndMakeVisible (btn);
+    }
+    list.setRowHeight (22);
+    readNamesBtn.setTooltip ("Read the 128 program names of this bank from the Evolver (a few seconds; kept for next time)");
+    readNamesBtn.onClick = [this] { proc.readNames (bank); };
+    loadBtn.setTooltip ("Switch the Evolver to the selected program and load it here (double-click works too). "
+                        "Unsaved edits on the Evolver are lost, as with its own program knob.");
+    loadBtn.onClick = [this] { load (list.getSelectedRow()); };
+    writeBtn.setTooltip ("Store the current patch and its name into the selected program on the Evolver");
     writeBtn.onClick = [this]
     {
-        const int b = bankBox.getSelectedId() - 1, prog = progBox.getSelectedId() - 1;
+        const int row = list.getSelectedRow();
+        if (row < 0)
+            return;
         juce::AlertWindow::showAsync (
             juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::WarningIcon, "Write to the Evolver",
-                "Overwrite bank " + juce::String (b + 1) + " program " + juce::String (prog + 1)
-                    + " on the Evolver with the current patch? This cannot be undone.",
-                "Write", "Cancel", this),
-            [safe = SafePointer<PatchesPage> (this), b, prog] (int result)
+                "Overwrite bank " + juce::String (bank + 1) + " program " + juce::String (row + 1) + " on the Evolver with the current patch? "
+                "This cannot be undone.", "Write", "Cancel", this),
+            [safe = SafePointer<BankBrowser> (this), b = bank, row] (int result)
             {
                 if (safe != nullptr && result == 1)
-                    safe->proc.writeProgram (b, prog);
+                    safe->proc.writeProgram (b, row);
             });
     };
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &list, &readNamesBtn, &loadBtn, &writeBtn })
+        addAndMakeVisible (c);
+}
 
+void BankBrowser::showBank (int b)
+{
+    bank = b;
+    for (int i = 0; i < 4; ++i)
+        bankButtons[(size_t) i].setToggleState (i == b, juce::dontSendNotification);
+    list.updateContent();
+    list.repaint();
+    const bool missing = std::any_of (proc.nameKnown.begin() + b * 128, proc.nameKnown.begin() + b * 128 + 128, [] (bool k) { return ! k; });
+    if (missing && isShowing() && ! proc.readingNames() && proc.link.hasInput() && proc.link.hasOutput())
+        proc.readNames (b);
+}
+
+void BankBrowser::refresh()
+{
+    list.repaint();
+}
+
+void BankBrowser::load (int row)
+{
+    if (row >= 0)
+        proc.selectProgram (bank, row);
+}
+
+void BankBrowser::paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool isSelected)
+{
+    const auto i = (size_t) (bank * 128 + row);
+    const bool current = proc.bank == bank && proc.program == row;
+    if (isSelected)
+        g.fillAll (colours::accent.withAlpha (0.25f));
+    else if (row % 2)
+        g.fillAll (juce::Colours::white.withAlpha (0.03f));
+
+    g.setFont (monoFont (12.0f));
+    g.setColour (current ? colours::yellow : colours::dim);
+    g.drawText (juce::String (row + 1).paddedLeft ('0', 3), 8, 0, 40, h, juce::Justification::centredLeft);
+    g.setFont (font (14.0f));
+    g.setColour (proc.nameKnown[i] ? colours::silk : colours::dim.withAlpha (0.6f));
+    g.drawText (! proc.nameKnown[i] ? juce::String ("...") : proc.programNames[i].isEmpty() ? juce::String ("(no name)") : proc.programNames[i],
+                52, 0, w - 90, h, juce::Justification::centredLeft, true);
+    if (current)
+        drawLed (g, juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ (float) w - 18.0f, (float) h / 2.0f }), true);
+}
+
+void BankBrowser::resized()
+{
+    auto r = getLocalBounds();
+    auto top = r.removeFromTop (28);
+    const int bw = top.getWidth() / 4;
+    for (auto& b : bankButtons)
+        b.setBounds (top.removeFromLeft (bw).reduced (2, 0));
+    r.removeFromTop (6);
+    auto bottom = r.removeFromBottom (28);
+    r.removeFromBottom (6);
+    readNamesBtn.setBounds (bottom.removeFromLeft (bottom.getWidth() / 3).withTrimmedRight (4));
+    loadBtn.setBounds (bottom.removeFromLeft (bottom.getWidth() / 2).withTrimmedRight (4));
+    writeBtn.setBounds (bottom);
+    list.setBounds (r);
+}
+
+//==============================================================================
+PatchesPage::PatchesPage (EvoCtrlProcessor& p) : proc (p), banks (p)
+{
     juce::String ascii; // Evolver names are 16 printable 7-bit ASCII chars
     for (char c = 32; c < 127; ++c)
         ascii << c;
@@ -1393,7 +1477,7 @@ PatchesPage::PatchesPage (EvoCtrlProcessor& p) : proc (p)
 
     list.setRowHeight (24);
     for (juce::Component* c : std::initializer_list<juce::Component*> {
-             &deviceGroup, &fileGroup, &libGroup, &bankBox, &progBox, &readBtn, &writeBtn, &nameLabel, &tagsLabel,
+             &deviceGroup, &fileGroup, &libGroup, &banks, &nameLabel, &tagsLabel,
              &nameEditor, &tagsEditor, &searchEditor, &importBtn, &exportBtn, &favOnly, &list,
              &saveBtn, &loadBtn, &favBtn, &tagBtn, &deleteBtn, &revealBtn })
         addAndMakeVisible (c);
@@ -1406,8 +1490,7 @@ void PatchesPage::refresh()
 {
     if (! nameEditor.hasKeyboardFocus (true))
         nameEditor.setText (proc.patchName, false);
-    bankBox.setSelectedId (proc.bank + 1, juce::dontSendNotification);
-    progBox.setSelectedId (proc.program + 1, juce::dontSendNotification);
+    banks.refresh();
 }
 
 void PatchesPage::rebuildList()
@@ -1491,7 +1574,7 @@ void PatchesPage::resized()
     };
 
     auto r = getLocalBounds().reduced (pad);
-    auto left = r.removeFromLeft (320);
+    auto left = r.removeFromLeft (420);
     r.removeFromLeft (pad);
 
     auto nameRow = row (left);
@@ -1502,16 +1585,12 @@ void PatchesPage::resized()
     tagsEditor.setBounds (tagsRow);
     left.removeFromTop (pad);
 
-    auto dev = left.removeFromTop (100);
-    deviceGroup.setBounds (dev);
-    dev = dev.reduced (12).withTrimmedTop (10);
-    split (row (dev), bankBox, progBox);
-    split (row (dev), readBtn, writeBtn);
-    left.removeFromTop (pad);
-
-    auto files = left.removeFromTop (68);
+    auto files = left.removeFromBottom (68);
     fileGroup.setBounds (files);
     split (files.reduced (12).withTrimmedTop (10).removeFromTop (26), importBtn, exportBtn);
+    left.removeFromBottom (pad);
+    deviceGroup.setBounds (left);
+    banks.setBounds (left.reduced (12).withTrimmedTop (10));
 
     libGroup.setBounds (r);
     auto lib = r.reduced (12).withTrimmedTop (10);
@@ -1548,30 +1627,184 @@ SetupPage::SetupPage (EvoCtrlProcessor& p) : proc (p)
     info.setCaretVisible (false);
     info.setFont (juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::plain)));
     info.setText (
-        "EVOLVER GLOBAL SETTINGS (Main menu on the Evolver)\n"
-        "  MIDI Rec     = ALL   receive dumps and SysEx parameter changes\n"
-        "  MIDI Xmit    = ALL   send knob moves as SysEx (two-way sync)\n"
-        "  MIDI Channel = ALL, or the channel chosen in the top bar (CC fallback only)\n"
-        "  Poly Chain   = OFF   prevents MIDI echo loops\n\n"
         "PARAMETER PATH\n"
-        "  Direct: EvoCtrl opens the Evolver MIDI ports itself and sends SysEx. Works for all\n"
-        "  parameters, dumps and the sequencer. Recommended.\n"
-        "  Via Ableton: knob moves go out as CC on this track's MIDI output; route it to the\n"
-        "  Evolver from another track (MIDI From: this track > EvoCtrl). Only parameters with a\n"
-        "  documented CC are sent, with a linear scaling not yet verified on hardware.\n\n"
+        "  Direct: EvoCtrl opens the Evolver MIDI ports itself and sends SysEx: all parameters, dumps,\n"
+        "  sequencer, waves. Recommended.\n"
+        "  Via Ableton: knob moves go out as CC on this track's MIDI output (route it to the Evolver from\n"
+        "  another track). Only parameters with a documented CC, linear scaling not verified on hardware.\n\n"
         "ABLETON LIVE (Preferences > Link, Tempo & MIDI)\n"
-        "  Turn Remote OFF for the Evolver ports so Live MIDI mappings don't double-route.\n"
-        "  Windows: a MIDI port can only be open in one application. If EvoCtrl reports a busy\n"
-        "  port, also turn Track OFF for it (input and output) and press Rescan.\n"
-        "  See README.md for the full setup.\n");
+        "  Turn Remote OFF for the Evolver ports. To sync the Evolver's sequencer, delays and LFOs to Live:\n"
+        "  turn Sync ON for the UltraLite MIDI Out in Live, and set MIDI Clock to 'MIDI clock in' above.\n"
+        "  Windows: a MIDI port can only be open in one application (see README).\n");
+
+    // Evolver globals (manual p.53-54). Program/bank (0, 1) are chosen in PATCHES.
+    const auto knob = [this] (int index, const char* name, int lo, int hi, int offset, const char* unit)
+    {
+        auto s = std::make_unique<juce::Slider> (juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::TextBoxBelow);
+        s->setRange (lo, hi, 1);
+        s->setTextBoxStyle (juce::Slider::TextBoxBelow, false, knobW, 18);
+        s->textFromValueFunction = [offset, unit] (double v)
+        {
+            const int x = (int) v + offset;
+            return juce::String (offset != 0 && x > 0 ? "+" : "") + juce::String (x) + unit;
+        };
+        s->getProperties().set ("bipolar", offset != 0);
+        s->onValueChange = [this, index, raw = s.get()] { changed (index, (int) raw->getValue()); };
+        enableFineDrag (*s);
+        addAndMakeVisible (*s);
+        globalKnobs[(size_t) index] = std::move (s);
+        globalLabels[(size_t) index].setText (name, juce::dontSendNotification);
+        globalLabels[(size_t) index].setJustificationType (juce::Justification::centred);
+    };
+    const auto menu = [this] (int index, const char* name, juce::StringArray items)
+    {
+        auto c = std::make_unique<juce::ComboBox>();
+        c->addItemList (items, 1);
+        c->onChange = [this, index, raw = c.get()] { changed (index, raw->getSelectedId() - 1); };
+        addAndMakeVisible (*c);
+        globalMenus[(size_t) index] = std::move (c);
+        globalLabels[(size_t) index].setText (name, juce::dontSendNotification);
+        globalLabels[(size_t) index].setJustificationType (juce::Justification::centredRight);
+    };
+    knob (2, "MASTER VOLUME", 0, 100, 0, "");
+    knob (3, "TRANSPOSE", 0, 72, -36, " st");
+    knob (11, "FINE TUNE", 0, 100, -50, " ct");
+    knob (4, "BPM", 30, 250, 0, "");
+    menu (12, "MIDI REC", { "Off", "All", "Program changes", "Parameters" });
+    menu (13, "MIDI XMIT", { "Off", "All", "Program changes", "Parameters" });
+    juce::StringArray channels { "All" };
+    for (int c = 1; c <= 16; ++c)
+        channels.add (juce::String (c));
+    menu (14, "MIDI CHANNEL", channels);
+    menu (9, "POLY CHAIN", { "Off", "Echo all MIDI", "Echo notes only" });
+    menu (7, "MIDI CLOCK", { "Internal", "Internal + send clock", "MIDI clock in", "MIDI clock in + thru", "No change", "No change",
+                             "MIDI clock in, ignore start/stop" });
+    menu (6, "USE PROGRAM TEMPO", { "Off", "On" });
+    juce::StringArray divs;
+    for (auto* d : evo::clockDivs)
+        divs.add (d);
+    menu (5, "CLOCK DIVIDE", divs);
+    menu (8, "LOCK SEQUENCE", { "Off", "On" });
+    menu (10, "INPUT GAIN", { "0 dB", "+3 dB", "+6 dB", "+9 dB", "+12 dB", "+15 dB", "+18 dB", "+21 dB", "+24 dB" });
+    for (auto& l : globalLabels)
+    {
+        l.setFont (spaced (10.5f));
+        addChildComponent (l);
+    }
+    for (int i = 2; i < evo::numMainParams; ++i)
+        globalLabels[(size_t) i].setVisible (true);
+
+    readGlobalsBtn.setTooltip ("Read the Evolver's global settings (also done each time this page opens)");
+    readGlobalsBtn.onClick = [this] { proc.readGlobals(); };
+    globalsStatus.setFont (spaced (12.0f));
+    addAndMakeVisible (readGlobalsBtn);
+    addAndMakeVisible (globalsStatus);
+    refresh();
 
     for (juce::Component* c : std::initializer_list<juce::Component*> { &modeLabel, &intervalLabel, &modeBox, &intervalSlider, &resendToggle, &info })
         addAndMakeVisible (c);
 }
 
+void SetupPage::changed (int index, int value)
+{
+    if (updating)
+        return;
+    if ((index != 12 && index != 13) || value == 1)
+        return proc.setGlobal (index, value);
+    // Anything but ALL on MIDI Rec / Xmit takes away dumps or two-way sync.
+    juce::AlertWindow::showAsync (
+        juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::WarningIcon, "This may disconnect EvoCtrl",
+            juce::String (index == 12 ? "MIDI Rec" : "MIDI Xmit") + " other than ALL stops part of what EvoCtrl needs "
+            "(dumps, knob sync). You may have to set it back from the Evolver's Main menu. Continue?", "Continue", "Cancel", this),
+        [safe = SafePointer<SetupPage> (this), index, value] (int result)
+        {
+            if (safe == nullptr)
+                return;
+            if (result == 1)
+                safe->proc.setGlobal (index, value);
+            else
+                safe->refresh();
+        });
+}
+
+void SetupPage::visibilityChanged()
+{
+    if (isShowing())
+        proc.readGlobals();
+}
+
+void SetupPage::refresh()
+{
+    updating = true;
+    for (int i = 0; i < evo::numMainParams; ++i)
+    {
+        const int v = proc.globals[(size_t) i];
+        if (auto& k = globalKnobs[(size_t) i])
+        {
+            k->setValue (v, juce::dontSendNotification);
+            k->setEnabled (proc.globalsKnown);
+        }
+        if (auto& m = globalMenus[(size_t) i])
+        {
+            m->setSelectedId (v + 1, juce::dontSendNotification);
+            m->setEnabled (proc.globalsKnown);
+        }
+    }
+    updating = false;
+
+    const auto& g = proc.globals;
+    juce::StringArray issues;
+    if (proc.globalsKnown)
+    {
+        if (g[9] != 0)  issues.add ("Poly Chain should be Off");
+        if (g[12] != 1) issues.add ("MIDI Rec should be All");
+        if (g[13] != 1) issues.add ("MIDI Xmit should be All");
+    }
+    globalsStatus.setColour (juce::Label::textColourId, issues.isEmpty() ? juce::Colour (0xff3ccf6e) : colours::led);
+    globalsStatus.setText (! proc.globalsKnown ? juce::String ("Not read yet: connect the Evolver, then READ")
+                           : issues.isEmpty() ? juce::String ("Read from the Evolver  -  all good for EvoCtrl")
+                                              : issues.joinIntoString ("  -  "),
+                           juce::dontSendNotification);
+}
+
+void SetupPage::paint (juce::Graphics& g)
+{
+    drawPanel (g, globalsPanel.toFloat(), juce::String::fromUTF8 ("Evolver globals  ·  Main menu, kept by the Evolver"));
+    drawPanel (g, appPanel.toFloat(), juce::String::fromUTF8 ("EvoCtrl  ·  MIDI path and options"));
+}
+
 void SetupPage::resized()
 {
-    auto r = getLocalBounds().reduced (pad * 2);
+    auto all = getLocalBounds().reduced (pad * 2);
+    globalsPanel = all.removeFromTop (juce::jmin (340, all.getHeight() * 55 / 100));
+    all.removeFromTop (pad * 2);
+    appPanel = all;
+
+    auto gp = globalsPanel.reduced (pad * 2).withTrimmedTop (titleH - pad);
+    auto top = gp.removeFromTop (rowH);
+    for (int i : { 2, 3, 11, 4 })
+    {
+        auto slot = top.removeFromLeft (knobW + 24);
+        globalLabels[(size_t) i].setBounds (slot.removeFromBottom (18));
+        globalKnobs[(size_t) i]->setBounds (slot);
+    }
+    top.removeFromLeft (pad * 3);
+    auto side = top.withSizeKeepingCentre (top.getWidth(), 64);
+    readGlobalsBtn.setBounds (side.removeFromTop (28).removeFromLeft (190));
+    side.removeFromTop (8);
+    globalsStatus.setBounds (side);
+    gp.removeFromTop (pad);
+
+    const int order[] { 12, 13, 14, 9, 7, 6, 5, 8, 10 };
+    const int colW = gp.getWidth() / 3;
+    for (int k = 0; k < 9; ++k)
+    {
+        auto cell = juce::Rectangle<int> (gp.getX() + (k % 3) * colW, gp.getY() + (k / 3) * 34, colW - 14, 26);
+        globalLabels[(size_t) order[k]].setBounds (cell.removeFromLeft (140));
+        globalMenus[(size_t) order[k]]->setBounds (cell.withTrimmedLeft (8));
+    }
+
+    auto r = appPanel.reduced (pad * 2).withTrimmedTop (titleH - pad);
     const auto line = [&r] { auto l = r.removeFromTop (26); r.removeFromTop (8); return l; };
 
     auto l = line();
@@ -1670,7 +1903,7 @@ EvoCtrlEditor::EvoCtrlEditor (EvoCtrlProcessor& p) : juce::AudioProcessorEditor 
     tabs.addTab ("WAVES", clear, wavesPage = new WavesPage (proc), true);
     tabs.addTab (layout::tabs()[1].name, clear, new SynthTab (proc, layout::tabs()[1], synth), true);
     tabs.addTab ("PATCHES", clear, patchesPage = new PatchesPage (proc), true);
-    tabs.addTab ("SETUP", clear, new SetupPage (proc), true);
+    tabs.addTab ("SETUP", clear, setupPage = new SetupPage (proc), true);
     tabs.addTab ("MONITOR", clear, monitorPage = new MonitorPage (proc), true);
     addAndMakeVisible (tabs);
     setLookAndFeel (&laf); // last: slider text boxes copy their colours when the look-and-feel reaches them
@@ -1751,6 +1984,7 @@ void EvoCtrlEditor::timerCallback()
     seqPage->refresh();
     patchesPage->refresh();
     wavesPage->refresh();
+    setupPage->refresh();
     repaint (statusDot);
     repaint (lcd);
 }

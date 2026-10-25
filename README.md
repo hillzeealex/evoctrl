@@ -1,8 +1,11 @@
-# EvoCtrl
+# EvoCtrl: Evolver editor and MIDI controller (VST3 / AU)
 
 An editor and controller for the **Dave Smith Instruments Evolver (desktop, mono)**, as a **VST3 / AU** plug-in
 and a standalone app. The whole synth sits on one panel and can be automated in Ableton Live. Sync works both
 ways: turn a knob in the plug-in and the Evolver follows, turn a knob on the Evolver and the plug-in follows.
+
+In short, it is an Evolver VST, an Evolver MIDI controller, an Evolver patch editor and librarian, and an Evolver
+waveshape editor, all in one, for the DSI / Sequential Mono Evolver desktop module.
 
 > **Tested on macOS only.** The Windows build has never been compiled or tested (see [Compatibility](#compatibility)).
 

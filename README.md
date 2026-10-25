@@ -10,10 +10,12 @@ ways: turn a knob in the plug-in and the Evolver follows, turn a knob on the Evo
 
 - [Features](#features)
 - [Compatibility](#compatibility)
+- [Versions](#versions)
 - [Installation](#installation)
 - [Cabling](#cabling)
 - [Evolver settings](#evolver-settings)
 - [Ableton Live settings](#ableton-live-settings)
+- [How to test](#how-to-test)
 - [How the MIDI works](#how-the-midi-works)
 - [The pages](#the-pages)
 - [Where the data is kept](#where-the-data-is-kept)
@@ -50,6 +52,15 @@ ways: turn a knob in the plug-in and the Evolver follows, turn a knob on the Evo
 | **Synth** | Tested on the **mono desktop Evolver** only. The Mono Evolver Keyboard should use the same messages, but this is not guaranteed. The **Poly Evolver** is not supported. |
 
 There is no prebuilt download yet, so you need to build it yourself (see below).
+
+---
+
+## Versions
+
+| Platform | Formats | Version | Status |
+|---|---|---|---|
+| **macOS** | VST3, AU, standalone | **0.1.0** (current `main`) | ✅ **Up to date.** Every feature in this README is in the build and has been tested on the hardware. |
+| **Windows** | VST3, standalone | none | ⚠️ **Not up to date.** Never built, so none of the features have been checked. Progress is tracked in [#9](https://github.com/hillzeealex/evoctrl/issues/9). |
 
 ---
 
@@ -162,6 +173,41 @@ EvoCtrl makes no sound and does not pass notes on: it edits the sound. Notes go 
 
 Live does not list all 128 parameters of a plug-in by default. To automate one, click **Configure** in the EvoCtrl
 device header, then move the knob in the plug-in. It then shows up in Live, ready to automate or map.
+
+---
+
+## How to test
+
+### Checking your setup (about two minutes)
+
+With the cables plugged in and the [Evolver settings](#evolver-settings) done, open EvoCtrl (the standalone app is
+the quickest) and go through these steps in order. If a step fails, the ones after it will fail too.
+
+| # | Do this | You should see |
+|---|---|---|
+| 1 | Pick the interface in **In** and **Out** | "Ports open - press Test to check the Evolver answers" |
+| 2 | Click **Test** | Green light and "Evolver connected and answering". The display shows the Evolver's bank and program. |
+| 3 | Click **Get from Evolver** | "Edit buffer received from the Evolver", and the knobs jump to the Evolver's current sound |
+| 4 | Turn **Cutoff** in the plug-in | The Evolver's display and sound follow. The value must not get stuck on 17 (see [#1](https://github.com/hillzeealex/evoctrl/issues/1)). |
+| 5 | Turn a knob on the **Evolver** | The same knob moves in the plug-in |
+| 6 | Change program on the Evolver | The plug-in reloads the new sound and shows the new number |
+| 7 | Open **MONITOR** and tick the log box, then move a knob | OUT lines for knobs moved in the plug-in, IN lines for knobs moved on the Evolver |
+
+Steps 2, 3, 5 and 6 need the return cable (Evolver OUT to interface IN). If they fail, see
+[Troubleshooting](#troubleshooting).
+
+### Testing on Windows
+
+Windows has never been tested, so any report helps. Build it as described in
+[Building on Windows](#building-on-windows-not-tested), go through the table above, and post what happened in
+[#9](https://github.com/hillzeealex/evoctrl/issues/9): your Windows version, your MIDI interface, the step that
+failed and what the MONITOR page showed. Step 4 matters most, because the fix for the cutoff problem exists on macOS
+only.
+
+### Automated tests
+
+`ctest --test-dir build` runs the tests for the SysEx format and the page layout, and pluginval checks the plug-in
+itself (see [Development](#development)). Neither needs an Evolver.
 
 ---
 

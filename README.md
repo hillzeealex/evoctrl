@@ -212,6 +212,63 @@ only.
 `ctest --test-dir build` runs the tests for the SysEx format and the page layout, and pluginval checks the plug-in
 itself (see [Development](#development)). Neither needs an Evolver.
 
+### What has been tested
+
+**Automated tests** (`tests/SysexTests.cpp`, run on every build):
+
+| Test | What it checks |
+|---|---|
+| Packing | 192 bytes pack to 220 and 256 to 293, as the manual states; unpacking gives the original bytes back; every packed byte is below 0x80; the bit layout matches the manual |
+| Messages | Exact bytes of Program Parameter, Request Edit Buffer, Request Program, Main Parameter, Request Main Dump, Start/Stop, Reset and Request Waveshape |
+| Dumps | Edit buffer and program dumps survive a round trip, including the bank, program and all 64 steps |
+| Names | Names survive a round trip; an unnamed program (filled with 0x7F) reads as empty |
+| Main dump | Program, bank and the other global settings are read from the right nibbles |
+| Waveshapes | A wave dump is 300 bytes and all 128 16-bit points survive a round trip; a truncated dump is rejected |
+| Bad input | Messages from other manufacturers and truncated dumps are rejected; a `.syx` file with junk between messages is split correctly |
+| Parameter table | Every default value is within range, and every value of every parameter has display text |
+| Layout | Each of the 128 parameters has exactly one control in the editor, and every envelope graph points at an Attack to Release group |
+
+**Plug-in validation** on macOS: pluginval at strictness level 5 on the VST3 and the AU after every change, and auval
+on the AU. Both binaries are universal (arm64 and x86_64).
+
+**On the hardware** (desktop Evolver behind a MOTU UltraLite-mk4, Apple Silicon Mac, Ableton Live 12). Most of these
+were run by driving the standalone app from CoreMIDI scripts, which uses the same code as the plug-in. The current
+sound was backed up first and restored afterwards.
+
+| Test | Result |
+|---|---|
+| Connection, Test, Get from Evolver | ✅ Answers, and the current bank and program are read |
+| All 128 parameters sent from EvoCtrl, then read back from the Evolver | ✅ Every value correct |
+| All 64 sequencer steps, same method | ✅ Every value correct |
+| Send to Evolver, then read back | ✅ Identical, no difference |
+| Cutoff values 79, 33, 150 and 64 from the plug-in | ✅ All stored correctly (they were all 17 before the fix in [#1](https://github.com/hillzeealex/evoctrl/issues/1)) |
+| The same SysEx split into two packets | ❌ Misread as 17 every time, which is how the cause of #1 was found |
+| Spacing between messages | 1 ms: 1 or 2 messages lost per burst, in every run. 4 ms: no errors in 4 runs (768 messages). See [#2](https://github.com/hillzeealex/evoctrl/issues/2). |
+| Parameter echo | The Evolver echoes every parameter it receives; EvoCtrl ignores the echo ([#3](https://github.com/hillzeealex/evoctrl/issues/3)) |
+| Edit buffer dump while a name is requested | Truncated to 219 and 176 bytes instead of 226 before the fix in [#4](https://github.com/hillzeealex/evoctrl/issues/4); complete since |
+| Cutoff moved from the plug-in in Live | ✅ Heard on the Evolver |
+| A knob turned on the Evolver | ✅ The same knob moves in the plug-in |
+| Program changed on the Evolver | ✅ EvoCtrl reloads the sound and shows the new number |
+| Reading all 128 waveshapes | ✅ 128 of 128 read (one wave missed its reply on the first run, hence the retry) |
+| A test wave written to slot 128, then read back | ✅ Identical to the bit; the original was written back, also identical |
+| Reading the global settings | ✅ All values shown match the Evolver |
+| Changing a global setting (Master Volume), then setting it back | ✅ Both applied |
+| Switching program through Main parameters 1 and 0 (from a script) | ✅ The Evolver switched, and the edit buffer was restored afterwards |
+| Program names | ✅ Bank 3 names read and shown |
+
+**Not tested yet**
+
+- **Windows**, in any form ([#9](https://github.com/hillzeealex/evoctrl/issues/9)).
+- **WRITE HERE…**, on purpose, because it overwrites a program in the Evolver's memory
+  ([#11](https://github.com/hillzeealex/evoctrl/issues/11) covers the name).
+- **LOAD ON EVOLVER** from the button (the same messages worked from a script).
+- **Start / Stop** and **Reset** of the sequencer (the messages match the manual).
+- **WAVES following the program** on the hardware (checked with two simulated program changes, to waves 70 and 20,
+  without the Evolver).
+- `.syx` import and export, automation recorded in Live, and *Via Ableton* mode
+  ([#10](https://github.com/hillzeealex/evoctrl/issues/10)).
+- Other DAWs than Ableton Live, other MIDI interfaces than the UltraLite-mk4, and the Mono Evolver Keyboard.
+
 ---
 
 ## How the MIDI works
@@ -262,6 +319,32 @@ All of this was checked on a real Evolver:
   with a retry if nothing comes back. A request sent while the Evolver is replying would corrupt its reply.
 - **Only its own replies.** If two copies of EvoCtrl are open (plug-in and standalone app), each ignores the replies
   the other one asked for.
+
+### Why SysEx is slower than CC, and why that was not the "17" problem
+
+A 5-pin MIDI cable runs at 31,250 bits per second, which is about 3,125 bytes per second, or 0.32 ms per byte. So the
+size of a message sets how fast it can travel:
+
+| Message | Size | Time on the cable | Most per second |
+|---|---|---|---|
+| CC (Via Ableton mode) | 3 bytes | about 1 ms | about 1,000 |
+| Program Parameter SysEx (Direct mode) | 9 bytes | about 2.9 ms | about 340 |
+| Same, with EvoCtrl's 4 ms spacing | 9 bytes | 4 ms | 250 |
+| Whole patch (Send to Evolver, one edit buffer dump) | 226 bytes | about 72 ms | |
+| All 128 parameters sent one by one | 1,152 bytes | about 0.5 s | |
+
+A CC is three times smaller, so in theory it is faster. In practice it does not help much: only about 40 parameters
+have a CC, a CC only has 128 steps where the cutoff has 165, and the Evolver itself drops messages that arrive less
+than about 4 ms apart, whatever their type. A knob turned quickly does not build up a backlog either: EvoCtrl only
+sends its latest value.
+
+The cutoff landing on 17 looked like a speed problem, but it was not. Even a single knob move, one message on its own,
+landed on 17, while the plug-in's log showed the right bytes going out and a test script sending the same bytes
+worked at every speed tried. The real cause was
+that macOS split each 9-byte message into two packets on its way to the interface, and the Evolver misread the split
+message. Sending each message as one packet fixed it at full speed (see
+[#1](https://github.com/hillzeealex/evoctrl/issues/1)). The 4 ms spacing is a separate fix, for the messages lost in
+fast bursts ([#2](https://github.com/hillzeealex/evoctrl/issues/2)).
 
 ---
 

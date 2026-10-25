@@ -1136,6 +1136,19 @@ void WavesPage::visibilityChanged()
 
 void WavesPage::timerCallback()
 {
+    // A new program always brings its own wave, even over an edit in progress (UNDO gets the edit back).
+    if (const int gen = proc.patchGeneration.load(); gen != lastGeneration)
+    {
+        const bool first = lastGeneration < 0;
+        lastGeneration = gen;
+        if (! first)
+        {
+            undo = editor.wave;
+            dirty = false;
+            follow (true);
+            refresh();
+        }
+    }
     const int osc3 = proc.param (10).get(), osc4 = proc.param (14).get();
     if (osc3 == lastOsc3 && osc4 == lastOsc4)
         return;

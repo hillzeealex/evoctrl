@@ -40,6 +40,7 @@ public:
     std::atomic<int> midiChannel { 1 };       // read on the audio thread (fallback CCs)
     std::atomic<bool> viaAbleton { false };   // read on the audio thread
     std::atomic<int> changeCounter { 0 };     // bumped when seq/name/status change so the editor can refresh
+    std::atomic<int> patchGeneration { 0 };   // bumped each time a whole patch is loaded (program change, Get, library...)
     void setViaAbleton (bool);
 
     EvolverLink link;

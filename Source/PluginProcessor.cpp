@@ -481,6 +481,7 @@ void EvoCtrlProcessor::applyPatch (const evo::Patch& patch, bool sendToDevice)
         setParamFromDevice (i, patch.params[(size_t) i]);
     for (int s = 0; s < evo::numSeqSteps; ++s)
         seq[(size_t) s] = patch.seq[(size_t) s];
+    ++patchGeneration;
     ++changeCounter;
 
     if (sendToDevice && link.hasOutput())

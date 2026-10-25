@@ -156,7 +156,7 @@ private:
     std::array<std::unique_ptr<WaveView>, evo::numWaves> tiles;
     bool showUser = false;
     int selectedSlot = evo::firstUserWave, loadedFrom = -1;
-    int followed = -1, lastOsc3 = -1, lastOsc4 = -1;
+    int followed = -1, lastOsc3 = -1, lastOsc4 = -1, lastGeneration = -1;
     bool dirty = false;   // the editor holds the user's own edit: don't replace it when the program changes
     juce::Rectangle<int> editorPanel, harmPanel, libPanel, audPanel;
     std::unique_ptr<juce::FileChooser> chooser;

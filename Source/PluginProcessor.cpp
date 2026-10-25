@@ -19,6 +19,16 @@ EvoCtrlProcessor::EvoCtrlProcessor()
     }
 
     link.onReceived = [this] { triggerAsyncUpdate(); };
+
+    for (const auto& m : PatchLibrary::readSyx (wavesFolder().getChildFile ("evolver-cache.syx")))
+        if (m.kind == evo::Parsed::Kind::Waveshape && m.index < evo::numWaves)
+            waves[(size_t) m.index] = m.wave;
+    waveWatchdog.fn = [this]   // no answer: ask once more, then skip that wave
+    {
+        if (std::exchange (waveRetried, ! waveRetried))
+            ++waveNext;
+        requestNextWave();
+    };
 }
 
 EvoCtrlProcessor::~EvoCtrlProcessor()
@@ -26,6 +36,7 @@ EvoCtrlProcessor::~EvoCtrlProcessor()
     for (auto* p : params)
         p->removeListener (this);
     link.onReceived = nullptr;
+    waveWatchdog.stopTimer();
     cancelPendingUpdate();
 }
 
@@ -202,6 +213,20 @@ void EvoCtrlProcessor::handleAsyncUpdate()
                 requestEditBuffer (true);
                 break;
 
+            case K::Waveshape:
+                if (m.index < evo::numWaves)
+                {
+                    waves[(size_t) m.index] = m.wave;
+                    if (m.index == waveNext)
+                    {
+                        ++waveNext;
+                        waveRetried = false;
+                        requestNextWave();
+                    }
+                    ++changeCounter;
+                }
+                break;
+
             case K::Name:
                 if (m.index == bank && m.value == program)
                 {
@@ -219,6 +244,65 @@ void EvoCtrlProcessor::setParamFromDevice (int index, int value)
     muteOutgoing = true; // listener fires synchronously below: record the value, don't echo it back
     params[(size_t) index]->setValueNotifyingHost (params[(size_t) index]->convertTo0to1 ((float) juce::jlimit (p.min, p.max, value)));
     muteOutgoing = false;
+}
+
+juce::File EvoCtrlProcessor::wavesFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("EvoCtrl/Waves");
+}
+
+int EvoCtrlProcessor::wavesKnown() const
+{
+    return (int) std::count_if (waves.begin(), waves.end(), [] (const auto& w) { return w.has_value(); });
+}
+
+void EvoCtrlProcessor::readWaves()
+{
+    if (! link.hasOutput() || ! link.hasInput())
+        return setStatus (StatusKind::Error, "Select both a MIDI input and output first");
+    waveNext = 0;
+    waveRetried = false;
+    requestNextWave();
+}
+
+// One request at a time: the next goes out when this one answers (handleAsyncUpdate) or times out (watchdog).
+void EvoCtrlProcessor::requestNextWave()
+{
+    if (waveNext >= evo::numWaves)
+    {
+        waveNext = -1;
+        waveWatchdog.stopTimer();
+        saveWaveCache();
+        return setStatus (StatusKind::Ok, juce::String (wavesKnown()) + " / 128 waveshapes read from the Evolver");
+    }
+    link.queueSysex (evo::requestWaveshape (waveNext));
+    waveWatchdog.startTimer (800);
+    setStatus (StatusKind::Warning, "Reading waveshapes " + juce::String (waveNext + 1) + " / 128...");
+}
+
+void EvoCtrlProcessor::sendWave (int num, const evo::Waveshape& w)
+{
+    if (num < evo::firstUserWave || num >= evo::numWaves)
+        return;
+    if (! link.hasOutput())
+        return setStatus (StatusKind::Error, "No MIDI output open");
+    link.queueSysex (evo::waveshapeDump (num, w));
+    waves[(size_t) num] = w;
+    saveWaveCache();
+    setStatus (StatusKind::Ok, "Waveshape " + juce::String (num + 1) + " sent to the Evolver");
+}
+
+void EvoCtrlProcessor::saveWaveCache() const
+{
+    evo::Bytes all;
+    for (int i = 0; i < evo::numWaves; ++i)
+        if (const auto& w = waves[(size_t) i])
+        {
+            const auto d = evo::waveshapeDump (i, *w);
+            all.insert (all.end(), d.begin(), d.end());
+        }
+    wavesFolder().createDirectory();
+    PatchLibrary::writeSyx (wavesFolder().getChildFile ("evolver-cache.syx"), all);
 }
 
 evo::Patch EvoCtrlProcessor::capturePatch() const

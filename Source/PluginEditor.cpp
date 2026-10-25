@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include <juce_audio_formats/juce_audio_formats.h>
 
 // Art direction: the Evolver desktop itself - black metal box, blue Lexan overlay silkscreened in white
 // (secondary legends in yellow), red LEDs and a red 3-digit LED readout.
@@ -726,6 +727,453 @@ void SequencerPage::resized()
 }
 
 //==============================================================================
+WaveView::WaveView (bool canEdit) : editable (canEdit)
+{
+    setMouseCursor (canEdit ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::PointingHandCursor);
+}
+
+juce::Rectangle<float> WaveView::plotArea() const
+{
+    auto r = getLocalBounds().toFloat().reduced (editable ? 14.0f : 4.0f);
+    if (! editable)
+        r.removeFromBottom (12.0f);
+    return r;
+}
+
+void WaveView::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat();
+    g.setColour (colours::recess);
+    g.fillRoundedRectangle (r, editable ? 6.0f : 3.0f);
+    if (selected)
+    {
+        g.setColour (colours::yellow);
+        g.drawRoundedRectangle (r.reduced (0.75f), 3.0f, 1.5f);
+    }
+
+    const auto a = plotArea();
+    g.setColour (colours::blueTop.withAlpha (0.45f));
+    if (editable)
+        for (int i = 0; i <= 4; ++i)
+            g.drawVerticalLine (juce::roundToInt (a.getX() + a.getWidth() * (float) i / 4.0f), a.getY(), a.getBottom());
+    g.drawHorizontalLine (juce::roundToInt (a.getCentreY()), a.getX(), a.getRight());
+
+    if (known)
+    {
+        juce::Path p;
+        for (size_t i = 0; i < wave.size(); ++i)
+        {
+            const float x = a.getX() + a.getWidth() * (float) i / 127.0f;
+            const float y = a.getCentreY() - (float) wave[i] / 32768.0f * a.getHeight() / 2.0f;
+            i == 0 ? p.startNewSubPath (x, y) : p.lineTo (x, y);
+        }
+        if (editable)
+        {
+            auto fill = p;
+            fill.lineTo (a.getRight(), a.getCentreY());
+            fill.lineTo (a.getX(), a.getCentreY());
+            fill.closeSubPath();
+            g.setColour (colours::led.withAlpha (0.14f));
+            g.fillPath (fill);
+            g.setColour (colours::led.withAlpha (0.3f));
+            g.strokePath (p, juce::PathStrokeType (7.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+        g.setColour (colours::led);
+        g.strokePath (p, juce::PathStrokeType (editable ? 2.5f : 1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+    else
+    {
+        g.setColour (colours::silk.withAlpha (0.3f));
+        g.setFont (monoFont (editable ? 16.0f : 11.0f));
+        g.drawText (editable ? "DRAW A WAVE HERE, OR LOAD ONE" : "?", a, juce::Justification::centred);
+    }
+
+    if (! editable)
+    {
+        const auto row = r.reduced (5.0f, 2.0f).removeFromBottom (12.0f);
+        g.setFont (monoFont (10.0f));
+        g.setColour (colours::yellow);
+        g.drawText (juce::String (number + 1), row, juce::Justification::centredLeft);
+        g.setColour (colours::led.withAlpha (known ? 0.9f : 0.4f));
+        g.drawText (label, row, juce::Justification::centredRight);
+    }
+}
+
+void WaveView::drawTo (juce::Point<float> p)
+{
+    const auto a = plotArea();
+    const auto index = [&a] (float x) { return juce::jlimit (0.0f, 127.0f, (x - a.getX()) / a.getWidth() * 127.0f); };
+    const auto value = [&a] (float y) { return juce::jlimit (-32767.0f, 32767.0f, (a.getCentreY() - y) / (a.getHeight() / 2.0f) * 32767.0f); };
+    const float i0 = index (last.x), i1 = index (p.x), v0 = value (last.y), v1 = value (p.y);
+    const int lo = juce::roundToInt (juce::jmin (i0, i1)), hi = juce::roundToInt (juce::jmax (i0, i1));
+    for (int i = lo; i <= hi; ++i) // fill every point the stroke crossed, so fast drags leave no gaps
+    {
+        const float t = hi == lo ? 1.0f : ((float) i - i0) / (i1 - i0);
+        wave[(size_t) i] = (int16_t) juce::roundToInt (v0 + juce::jlimit (0.0f, 1.0f, t) * (v1 - v0));
+    }
+    known = true;
+    last = p;
+    repaint();
+}
+
+void WaveView::mouseDown (const juce::MouseEvent& e)
+{
+    if (! editable)
+        return;
+    if (onEditStart)
+        onEditStart();
+    last = e.position;
+    drawTo (e.position);
+}
+
+void WaveView::mouseDrag (const juce::MouseEvent& e)
+{
+    if (editable)
+        drawTo (e.position);
+}
+
+void WaveView::mouseUp (const juce::MouseEvent& e)
+{
+    if (editable ? onEditEnd != nullptr : onClick != nullptr && getLocalBounds().contains (e.getPosition()))
+        editable ? onEditEnd() : onClick();
+}
+
+//==============================================================================
+static evo::Waveshape normalised (std::array<float, 128> v)
+{
+    float peak = 0.0f;
+    for (auto x : v)
+        peak = juce::jmax (peak, std::abs (x));
+    evo::Waveshape w {};
+    for (size_t i = 0; i < v.size(); ++i)
+        w[i] = (int16_t) juce::roundToInt (peak > 0.0f ? v[i] / peak * 32000.0f : 0.0f);
+    return w;
+}
+
+WavesPage::WavesPage (EvoCtrlProcessor& p) : proc (p)
+{
+    addAndMakeVisible (editor);
+    editor.onEditStart = [this] { beginEdit(); };
+    editor.onEditEnd = [this] { endEdit(); };
+
+    for (size_t k = 0; k < harmonics.size(); ++k)
+    {
+        auto& s = harmonics[k];
+        s.setSliderStyle (juce::Slider::LinearBarVertical);
+        s.setRange (0, 100, 1);
+        s.setColour (juce::Slider::textBoxTextColourId, colours::silk);
+        s.setTooltip ("Harmonic " + juce::String ((int) k + 1));
+        s.onDragStart = [this] { beginEdit(); };
+        s.onDragEnd = [this] { endEdit(); };
+        s.onValueChange = [this] { if (! settingHarmonics) fromHarmonics(); };
+        addAndMakeVisible (s);
+    }
+
+    // Starting points, as harmonic recipes (amplitude per harmonic 1-16, sign = phase).
+    const std::vector<std::pair<juce::String, std::function<float (int)>>> presets {
+        { "SINE",     [] (int k) { return k == 1 ? 1.0f : 0.0f; } },
+        { "SAW",      [] (int k) { return 1.0f / (float) k; } },
+        { "SQUARE",   [] (int k) { return k % 2 ? 1.0f / (float) k : 0.0f; } },
+        { "TRIANGLE", [] (int k) { return k % 2 ? (((k - 1) / 2) % 2 ? -1.0f : 1.0f) / (float) (k * k) : 0.0f; } },
+        { "ORGAN",    [] (int k) { const float v[] { 1, .8f, 0, .6f, 0, .45f, 0, .3f, 0, 0, 0, .2f, 0, 0, 0, .15f }; return v[k - 1]; } },
+        { "BELL",     [] (int k) { const float v[] { 1, 0, .7f, 0, 0, .55f, 0, 0, .4f, 0, .3f, 0, 0, .25f, 0, .2f }; return v[k - 1]; } },
+    };
+    for (const auto& preset : presets)
+    {
+        auto& b = *presetButtons.emplace_back (std::make_unique<juce::TextButton> (preset.first));
+        b.onClick = [this, recipe = preset.second]
+        {
+            beginEdit();
+            settingHarmonics = true;
+            for (size_t k = 0; k < harmonics.size(); ++k)
+                harmonics[k].setValue (std::abs (recipe ((int) k + 1)) * 100.0, juce::dontSendNotification);
+            settingHarmonics = false;
+            std::array<float, 128> v {};
+            for (size_t n = 0; n < v.size(); ++n)
+                for (int k = 1; k <= 16; ++k)
+                    v[n] += recipe (k) * std::sin (juce::MathConstants<float>::twoPi * (float) (k * (int) n) / 128.0f);
+            setWave (normalised (v));
+            endEdit();
+        };
+        addAndMakeVisible (b);
+    }
+
+    const auto tool = [this] (const juce::String& name, std::function<void (evo::Waveshape&)> fn)
+    {
+        auto& b = *toolButtons.emplace_back (std::make_unique<juce::TextButton> (name));
+        b.onClick = [this, fn]
+        {
+            beginEdit();
+            auto w = editor.wave;
+            fn (w);
+            setWave (w);
+            endEdit();
+        };
+        addAndMakeVisible (b);
+    };
+    tool ("SMOOTH", [] (evo::Waveshape& w)
+    {
+        const auto src = w;
+        for (size_t i = 0; i < w.size(); ++i) // circular: the wave loops
+            w[i] = (int16_t) ((src[(i + 127) % 128] + 2 * src[i] + src[(i + 1) % 128]) / 4);
+    });
+    tool ("NORMALIZE", [] (evo::Waveshape& w)
+    {
+        std::array<float, 128> v {};
+        for (size_t i = 0; i < w.size(); ++i) v[i] = w[i];
+        w = normalised (v);
+    });
+    tool ("INVERT", [] (evo::Waveshape& w) { for (auto& x : w) x = (int16_t) juce::jlimit (-32767, 32767, -(int) x); });
+    tool ("REVERSE", [] (evo::Waveshape& w) { std::reverse (w.begin(), w.end()); });
+    {
+        auto& b = *toolButtons.emplace_back (std::make_unique<juce::TextButton> ("UNDO"));
+        b.onClick = [this] { const auto w = editor.wave; setWave (undo); undo = w; endEdit(); };
+        addAndMakeVisible (b);
+    }
+
+    importBtn.setTooltip ("Load a single-cycle .wav (any length, resampled to 128 points)");
+    importBtn.onClick = [this]
+    {
+        chooser = std::make_unique<juce::FileChooser> ("Import a single-cycle wave", juce::File(), "*.wav;*.aif;*.aiff");
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this] (const juce::FileChooser& fc)
+        {
+            juce::AudioFormatManager formats;
+            formats.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (fc.getResult()));
+            if (reader == nullptr || reader->lengthInSamples < 2)
+                return;
+            const int n = (int) juce::jmin<juce::int64> (reader->lengthInSamples, 1 << 16);
+            juce::AudioBuffer<float> buffer (1, n);
+            reader->read (&buffer, 0, n, 0, true, false);
+            std::array<float, 128> v {};
+            for (size_t i = 0; i < v.size(); ++i) // linear resample of the whole file to one 128-point cycle
+            {
+                const float pos = (float) i * (float) (n - 1) / 127.0f;
+                const int i0 = (int) pos, i1 = juce::jmin (i0 + 1, n - 1);
+                v[i] = juce::jmap (pos - (float) i0, buffer.getSample (0, i0), buffer.getSample (0, i1));
+            }
+            beginEdit();
+            setWave (normalised (v));
+            endEdit();
+        });
+    };
+
+    for (auto* b : { &romBtn, &userBtn })
+        b->setColour (juce::TextButton::textColourOnId, colours::yellow); // active bank = yellow text (no LED over the label)
+    romBtn.setToggleState (true, juce::dontSendNotification);
+    const auto showBank = [this] (bool user)
+    {
+        showUser = user;
+        romBtn.setToggleState (! user, juce::dontSendNotification);
+        userBtn.setToggleState (user, juce::dontSendNotification);
+        layoutTiles();
+        refresh();
+    };
+    romBtn.onClick = [showBank] { showBank (false); };
+    userBtn.onClick = [showBank] { showBank (true); };
+
+    readBtn.setTooltip ("Read all 128 waveshapes from the Evolver (about 15 s; kept for next time)");
+    readBtn.onClick = [this] { proc.readWaves(); };
+
+    sendBtn.setTooltip ("Store the edited wave in this user slot of the Evolver (it is kept in its memory)");
+    sendBtn.onClick = [this] { proc.sendWave (selectedSlot, editor.wave); };
+
+    saveBtn.setTooltip ("Save the edited wave as a .syx file in Documents/EvoCtrl/Waves");
+    saveBtn.onClick = [this]
+    {
+        const auto dir = EvoCtrlProcessor::wavesFolder();
+        dir.createDirectory();
+        PatchLibrary::writeSyx (dir.getNonexistentChildFile ("Wave " + juce::String (selectedSlot + 1), ".syx", false),
+                                evo::waveshapeDump (selectedSlot, editor.wave));
+    };
+
+    oscBox.addItem ("OSC 3", 1);
+    oscBox.addItem ("OSC 4", 2);
+    oscBox.setSelectedId (1, juce::dontSendNotification);
+    auditionBtn.setTooltip ("Send the wave to its slot and select that slot on the chosen digital oscillator");
+    auditionBtn.onClick = [this]
+    {
+        proc.sendWave (selectedSlot, editor.wave);
+        auto& shape = proc.param (oscBox.getSelectedId() == 1 ? 10 : 14);   // Osc 3 / Osc 4 Shape: 0-127 = waves 1-128
+        shape.beginChangeGesture();
+        shape.setValueNotifyingHost (shape.convertTo0to1 ((float) selectedSlot));
+        shape.endChangeGesture();
+    };
+    liveToggle.setTooltip ("Each stroke, preset or tool is stored in the Evolver's user slot when you release it");
+
+    progress.setColour (juce::Label::textColourId, colours::dim);
+    progress.setFont (font (13.0f));
+
+    for (int i = 0; i < evo::numWaves; ++i)
+    {
+        auto& t = tiles[(size_t) i];
+        t = std::make_unique<WaveView> (false);
+        t->number = i;
+        t->onClick = [this, i]
+        {
+            if (i >= evo::firstUserWave)
+                selectedSlot = i;
+            if (proc.waves[(size_t) i])
+            {
+                beginEdit();
+                setWave (*proc.waves[(size_t) i]);
+                loadedFrom = i;
+            }
+            refresh();
+        };
+        tilesContent.addChildComponent (*t);
+    }
+    tilesView.setViewedComponent (&tilesContent, false);
+    tilesView.setScrollBarsShown (true, false);
+
+    for (juce::Component* c : std::initializer_list<juce::Component*> {
+             &importBtn, &romBtn, &userBtn, &readBtn, &sendBtn, &saveBtn, &auditionBtn, &oscBox, &liveToggle, &progress, &tilesView })
+        addAndMakeVisible (c);
+    refresh();
+}
+
+void WavesPage::setWave (const evo::Waveshape& w)
+{
+    editor.wave = w;
+    editor.known = true;
+    editor.repaint();
+    refresh();
+}
+
+void WavesPage::endEdit()
+{
+    if (liveToggle.getToggleState())
+        proc.sendWave (selectedSlot, editor.wave);
+    refresh();
+}
+
+void WavesPage::fromHarmonics()
+{
+    std::array<float, 128> v {};
+    for (size_t n = 0; n < v.size(); ++n)
+        for (size_t k = 0; k < harmonics.size(); ++k)
+            v[n] += (float) harmonics[k].getValue() / 100.0f
+                  * std::sin (juce::MathConstants<float>::twoPi * (float) ((k + 1) * n) / 128.0f);
+    editor.wave = normalised (v);
+    editor.known = true;
+    editor.repaint();
+}
+
+void WavesPage::visibilityChanged()
+{
+    // First visit with nothing cached: fetch the thumbnails once.
+    if (isShowing() && proc.wavesKnown() == 0 && ! proc.readingWaves() && proc.link.hasInput() && proc.link.hasOutput())
+        proc.readWaves();
+}
+
+void WavesPage::refresh()
+{
+    for (int i = 0; i < evo::numWaves; ++i)
+    {
+        auto& t = *tiles[(size_t) i];
+        const auto& w = proc.waves[(size_t) i];
+        t.known = w.has_value();
+        if (w)
+            t.wave = *w;
+        const bool isSlot = i == selectedSlot;
+        t.selected = isSlot || i == loadedFrom;
+        t.label = i < evo::firstUserWave ? juce::String ("ROM") : isSlot ? juce::String ("EDIT") : w ? juce::String ("USER") : juce::String ("EMPTY");
+        t.repaint();
+    }
+    sendBtn.setButtonText ("SEND TO SLOT " + juce::String (selectedSlot + 1));
+    progress.setText (proc.readingWaves() ? proc.status.text
+                                          : juce::String (proc.wavesKnown()) + " / 128 read  ·  user slots 97-128 are writable",
+                      juce::dontSendNotification);
+}
+
+void WavesPage::layoutTiles()
+{
+    const int first = showUser ? evo::firstUserWave : 0, last = showUser ? evo::numWaves : evo::firstUserWave;
+    const int w = tilesView.getWidth() - tilesView.getScrollBarThickness() - 2, cols = 4, gap = 6, h = 62;
+    const int tw = (w - gap * (cols - 1)) / cols;
+    for (int i = 0; i < evo::numWaves; ++i)
+    {
+        auto& t = *tiles[(size_t) i];
+        const bool shown = i >= first && i < last;
+        t.setVisible (shown);
+        if (shown)
+        {
+            const int k = i - first;
+            t.setBounds ((k % cols) * (tw + gap), (k / cols) * (h + gap), tw, h);
+        }
+    }
+    tilesContent.setSize (w, ((last - first + cols - 1) / cols) * (h + gap));
+}
+
+void WavesPage::paint (juce::Graphics& g)
+{
+    drawPanel (g, editorPanel.toFloat(), juce::String::fromUTF8 ("Waveshape  ·  draw with the mouse, or use the harmonics"));
+    drawPanel (g, harmPanel.toFloat(), juce::String::fromUTF8 ("Harmonics  ·  16 drawbars"));
+    drawPanel (g, libPanel.toFloat(), juce::String::fromUTF8 ("Waves  ·  1–128, click to load"));
+    drawPanel (g, audPanel.toFloat(), juce::String::fromUTF8 ("Audition  ·  hear it on the Evolver"));
+}
+
+void WavesPage::resized()
+{
+    auto r = getLocalBounds().reduced (pad * 2);
+    auto right = r.removeFromRight (juce::jlimit (340, 480, r.getWidth() / 3));
+    r.removeFromRight (pad * 2);
+
+    editorPanel = r.removeFromTop (juce::roundToInt ((float) r.getHeight() * 0.6f));
+    r.removeFromTop (pad * 2);
+    harmPanel = r;
+
+    auto e = editorPanel.reduced (pad * 2).withTrimmedTop (titleH - pad);
+    auto tools = e.removeFromBottom (30);
+    e.removeFromBottom (pad);
+    editor.setBounds (e);
+    importBtn.setBounds (tools.removeFromRight (130));
+    for (auto& b : toolButtons)
+        b->setBounds (tools.removeFromLeft (96).withTrimmedRight (6));
+
+    auto h = harmPanel.reduced (pad * 2).withTrimmedTop (titleH - pad);
+    auto presetCol = h.removeFromLeft (110);
+    h.removeFromLeft (pad * 2);
+    const int bh = juce::jmin (28, (presetCol.getHeight() - 5 * 4) / 6);
+    for (auto& b : presetButtons)
+    {
+        b->setBounds (presetCol.removeFromTop (bh));
+        presetCol.removeFromTop (4);
+    }
+    const int sw = h.getWidth() / (int) harmonics.size();
+    for (auto& s : harmonics)
+        s.setBounds (h.removeFromLeft (sw).reduced (3, 0));
+
+    audPanel = right.removeFromBottom (110);
+    right.removeFromBottom (pad * 2);
+    libPanel = right;
+
+    auto l = libPanel.reduced (pad * 2).withTrimmedTop (titleH - pad);
+    auto banks = l.removeFromTop (28);
+    romBtn.setBounds (banks.removeFromLeft (banks.getWidth() / 2).withTrimmedRight (3));
+    userBtn.setBounds (banks.withTrimmedLeft (3));
+    l.removeFromTop (pad);
+    auto bottom = l.removeFromBottom (34);
+    saveBtn.setBounds (bottom.removeFromRight (140));
+    sendBtn.setBounds (bottom.withTrimmedRight (6));
+    l.removeFromBottom (pad);
+    auto readRow = l.removeFromBottom (26);
+    readBtn.setBounds (readRow.removeFromLeft (100));
+    progress.setBounds (readRow.withTrimmedLeft (6));
+    l.removeFromBottom (pad);
+    tilesView.setBounds (l);
+    layoutTiles();
+
+    auto a = audPanel.reduced (pad * 2).withTrimmedTop (titleH - pad);
+    auto row = a.removeFromTop (28);
+    auditionBtn.setBounds (row.removeFromLeft (90));
+    row.removeFromLeft (6);
+    oscBox.setBounds (row.removeFromLeft (100));
+    a.removeFromTop (6);
+    liveToggle.setBounds (a.removeFromTop (24));
+}
+
+//==============================================================================
 PatchesPage::PatchesPage (EvoCtrlProcessor& p) : proc (p)
 {
     for (int b = 1; b <= 4; ++b)
@@ -1106,6 +1554,7 @@ EvoCtrlEditor::EvoCtrlEditor (EvoCtrlProcessor& p) : juce::AudioProcessorEditor 
     auto* synth = new SynthTab (proc, layout::tabs()[0]);
     tabs.addTab (layout::tabs()[0].name, clear, synth, true);
     tabs.addTab ("SEQUENCER", clear, seqPage = new SequencerPage (proc), true);
+    tabs.addTab ("WAVES", clear, wavesPage = new WavesPage (proc), true);
     tabs.addTab (layout::tabs()[1].name, clear, new SynthTab (proc, layout::tabs()[1], synth), true);
     tabs.addTab ("PATCHES", clear, patchesPage = new PatchesPage (proc), true);
     tabs.addTab ("SETUP", clear, new SetupPage (proc), true);
@@ -1188,6 +1637,7 @@ void EvoCtrlEditor::timerCallback()
     statusLabel.setTooltip (proc.status.text);
     seqPage->refresh();
     patchesPage->refresh();
+    wavesPage->refresh();
     repaint (statusDot);
     repaint (lcd);
 }

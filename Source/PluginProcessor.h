@@ -45,6 +45,14 @@ public:
     EvolverLink link;
     PatchLibrary library;
 
+    // WAVES tab. Message thread only. What was read from (or sent to) the Evolver, kept on disk between sessions.
+    std::array<std::optional<evo::Waveshape>, evo::numWaves> waves;
+    void readWaves();                                   // all 128, one request at a time
+    void sendWave (int num, const evo::Waveshape&);     // num 96-127 only (stored by the Evolver)
+    bool readingWaves() const { return waveNext >= 0; }
+    int wavesKnown() const;
+    static juce::File wavesFolder();
+
     // --- juce::AudioProcessor
     void prepareToPlay (double, int) override {}
     void releaseResources() override {}
@@ -72,6 +80,8 @@ private:
     void requestEditBuffer (bool apply);
     void setStatus (StatusKind, const juce::String&);
     void setParamFromDevice (int index, int value);
+    void requestNextWave();
+    void saveWaveCache() const;
 
     std::array<juce::AudioParameterInt*, evo::numParams> params {};
     std::array<std::atomic<int>, evo::numParams> lastValue {};   // last value known on both sides: anti-echo + dedupe
@@ -84,6 +94,11 @@ private:
     std::atomic<bool> muteOutgoing { false };                    // true while applying device/state values
     bool pendingTest = false, applyNextEditBuffer = false, pendingProgramRead = false;
     bool pendingMain = false, nameAfterDump = false; // another client's requests also reach us: only handle our own
+
+    struct Watchdog : juce::Timer { std::function<void()> fn; void timerCallback() override { fn(); } };
+    Watchdog waveWatchdog;   // a wave that never answers is skipped
+    int waveNext = -1;
+    bool waveRetried = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EvoCtrlProcessor)
 };

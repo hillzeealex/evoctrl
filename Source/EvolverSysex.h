@@ -14,6 +14,10 @@ namespace evo
 {
 using Bytes = std::vector<uint8_t>;
 
+// A digital oscillator waveshape: 128 signed 16-bit points (p.48). Waves 97-128 (0-based 96-127) are user writable.
+using Waveshape = std::array<int16_t, 128>;
+constexpr int numWaves = 128, firstUserWave = 96;
+
 // One full program: what a Program / Edit Buffer dump carries. Also the value type for V2 undo, A/B, morph.
 struct Patch
 {
@@ -25,11 +29,13 @@ struct Patch
 namespace cmd
 {
     constexpr uint8_t programParam = 0x01, programDump = 0x02, editBufferDump = 0x03, requestProgram = 0x05,
-                      requestEditBuffer = 0x06, seqParam = 0x08, requestMain = 0x0E, mainDump = 0x0F,
+                      requestEditBuffer = 0x06, seqParam = 0x08, waveshapeDump = 0x0A, requestWaveshape = 0x0B,
+                      requestMain = 0x0E, mainDump = 0x0F,
                       requestName = 0x10, nameDump = 0x11;
 }
 
 constexpr int packedPatchSize = 220;
+constexpr int packedWaveSize = 293;  // 256 bytes = 128 words, LS byte then MS byte
 constexpr int nameLength = 16;
 
 // 8-byte packets: MS bits of 7 data bytes first (bit i = byte i), then the 7 low-7-bit bytes. Last packet may be partial.
@@ -74,6 +80,7 @@ inline Bytes nibbleMessage (uint8_t command, int index, int value)
 inline Bytes programParam (int index, int value) { return nibbleMessage (cmd::programParam, index, value); }
 inline Bytes seqParam (int step, int value)      { return nibbleMessage (cmd::seqParam, step, value); }
 inline Bytes requestEditBuffer()                 { auto b = header (cmd::requestEditBuffer); return end (b); }
+inline Bytes requestWaveshape (int num)          { auto b = header (cmd::requestWaveshape); b.push_back ((uint8_t) (num & 0x7F)); return end (b); }
 inline Bytes requestMainParams()                 { auto b = header (cmd::requestMain); return end (b); }  // p.51
 
 inline Bytes bankProgMessage (uint8_t command, int bank, int prog)
@@ -104,6 +111,21 @@ inline Bytes programDump (int bank, int prog, const Patch& p)
     return end (b);
 }
 
+inline Bytes waveshapeDump (int num, const Waveshape& w)
+{
+    auto b = header (cmd::waveshapeDump);
+    b.push_back ((uint8_t) (num & 0x7F));
+    uint8_t raw[256];
+    for (size_t i = 0; i < w.size(); ++i)
+    {
+        raw[2 * i] = (uint8_t) ((uint16_t) w[i] & 0xFF);
+        raw[2 * i + 1] = (uint8_t) ((uint16_t) w[i] >> 8);
+    }
+    const auto packed = pack (raw, sizeof (raw));
+    b.insert (b.end(), packed.begin(), packed.end());
+    return end (b);
+}
+
 inline Bytes nameDump (int bank, int prog, const std::string& name)
 {
     auto b = bankProgMessage (cmd::nameDump, bank, prog);
@@ -115,10 +137,11 @@ inline Bytes nameDump (int bank, int prog, const std::string& name)
 struct Parsed
 {
     // Main = Main Parameter dump (current bank + program); ProgramChange = MIDI program change from the Evolver.
-    enum class Kind { ProgramParam, SeqParam, EditBuffer, Program, Name, Main, ProgramChange } kind;
+    enum class Kind { ProgramParam, SeqParam, EditBuffer, Program, Name, Main, ProgramChange, Waveshape } kind;
     int index = 0, value = 0;  // param/step number + value, or bank + program for dumps/names/main
     Patch patch {};
     std::string name;
+    Waveshape wave {};  // Kind::Waveshape: index = wave number 0-127
 };
 
 inline Patch patchFromPacked (const uint8_t* d)
@@ -153,6 +176,15 @@ inline std::optional<Parsed> parse (const uint8_t* d, size_t n)
         case cmd::programDump:
             if (n != (size_t) packedPatchSize + 2) return std::nullopt;
             return Parsed { Parsed::Kind::Program, d[0], d[1], patchFromPacked (d + 2) };
+        case cmd::waveshapeDump:
+        {
+            if (n != 1 + (size_t) packedWaveSize) return std::nullopt;
+            Parsed r { Parsed::Kind::Waveshape, d[0] };
+            const auto raw = unpack (d + 1, packedWaveSize);
+            for (size_t i = 0; i < r.wave.size(); ++i)
+                r.wave[i] = (int16_t) (uint16_t) (raw[2 * i] | (raw[2 * i + 1] << 8));
+            return r;
+        }
         case cmd::mainDump:
             // 16 main params as LS/MS nibble pairs (p.48, p.53): #0 = program 0-127, #1 = bank 0-3.
             if (n != 32) return std::nullopt;

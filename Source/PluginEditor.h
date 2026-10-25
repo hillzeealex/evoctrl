@@ -95,6 +95,65 @@ private:
     juce::Rectangle<int> grid;
 };
 
+// Draws a waveshape. The big editable one takes mouse drawing; the small ones are clickable library tiles.
+class WaveView : public juce::Component
+{
+public:
+    explicit WaveView (bool editable);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+    evo::Waveshape wave {};
+    bool known = false, selected = false;
+    int number = 0;
+    juce::String label;
+    std::function<void()> onClick, onEditStart, onEditEnd;
+
+private:
+    juce::Rectangle<float> plotArea() const;
+    void drawTo (juce::Point<float>);
+    const bool editable;
+    juce::Point<float> last;
+};
+
+class WavesPage : public juce::Component
+{
+public:
+    explicit WavesPage (EvoCtrlProcessor&);
+    void refresh();
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void visibilityChanged() override;
+
+private:
+    void beginEdit() { undo = editor.wave; }
+    void endEdit();
+    void setWave (const evo::Waveshape&);
+    void fromHarmonics();
+    void layoutTiles();
+
+    EvoCtrlProcessor& proc;
+    WaveView editor { true };
+    evo::Waveshape undo {};
+    std::array<juce::Slider, 16> harmonics;
+    bool settingHarmonics = false;
+    std::vector<std::unique_ptr<juce::TextButton>> presetButtons, toolButtons;
+    juce::TextButton importBtn { "IMPORT WAV..." }, romBtn { "ROM 1-96" }, userBtn { "USER 97-128" },
+                     readBtn { "READ ALL" }, sendBtn, saveBtn { "SAVE TO LIBRARY" }, auditionBtn { "PLAY ON" };
+    juce::ComboBox oscBox;
+    juce::ToggleButton liveToggle { "Live: send at the end of each stroke" };
+    juce::Label progress;
+    juce::Viewport tilesView;
+    juce::Component tilesContent;
+    std::array<std::unique_ptr<WaveView>, evo::numWaves> tiles;
+    bool showUser = false;
+    int selectedSlot = evo::firstUserWave, loadedFrom = -1;
+    juce::Rectangle<int> editorPanel, harmPanel, libPanel, audPanel;
+    std::unique_ptr<juce::FileChooser> chooser;
+};
+
 class MonitorPage : public juce::Component
 {
 public:
@@ -178,6 +237,7 @@ private:
     SequencerPage* seqPage = nullptr;
     PatchesPage* patchesPage = nullptr;
     MonitorPage* monitorPage = nullptr;
+    WavesPage* wavesPage = nullptr;
     int lastChange = -1;
     juce::Rectangle<int> statusDot, lcd;
     std::array<int, evo::numParams> seen {};   // last polled values: the LED shows whichever parameter moved last

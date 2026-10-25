@@ -65,6 +65,17 @@ int main()
     assert (r && r->kind == Parsed::Kind::Main && r->value == 66 && r->index == 2);
     assert (requestMainParams() == (Bytes { 0xF0, 0x01, 0x20, 0x01, 0x0E, 0xF7 }));
 
+    // Waveshape: 300-byte dump (5 header + number + 293 packed + F7), full 16-bit round trip.
+    Waveshape wave;
+    for (int i = 0; i < 128; ++i) wave[(size_t) i] = (int16_t) ((i * 517) % 65536 - 32768);
+    const auto wd = waveshapeDump (100, wave);
+    assert (wd.size() == 300);
+    auto wdBody = body (wd);
+    r = parse (wdBody.data(), wdBody.size());
+    assert (r && r->kind == Parsed::Kind::Waveshape && r->index == 100 && r->wave == wave);
+    assert (requestWaveshape (127) == (Bytes { 0xF0, 0x01, 0x20, 0x01, 0x0B, 127, 0xF7 }));
+    assert (! parse (wdBody.data(), wdBody.size() - 1));
+
     // Rejects foreign / truncated messages.
     const Bytes foreign { 0x01, 0x21, 0x01, 0x01, 0, 0, 0 };
     assert (! parse (foreign.data(), foreign.size()));

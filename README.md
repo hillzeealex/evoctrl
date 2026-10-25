@@ -112,6 +112,12 @@ gère que le son.
 - **TWEAKS :** réglages rares, contrôleurs (vélocité, molette, pression, breath, pédale) et entrée externe.
 - **SEQUENCER :** grille 4 × 16 (0–100) avec destinations, tempo, division et trigger. Les valeurs > 100 reçues
   (rst / off, codes non documentés) sont conservées et affichées en gris.
+- **WAVES :** éditeur des formes d'onde des oscillateurs numériques (3 et 4). Les 128 formes de l'Evolver sont lues
+  une fois (≈ 15 s, gardées dans `Documents/EvoCtrl/Waves`) et affichées en vignettes (ROM 1–96, USER 97–128) ; un clic
+  en charge une. Dessin à la souris, 16 tirettes d'harmoniques, formes de départ, Smooth / Normalize / Invert /
+  Reverse / Undo, import d'un .wav d'un cycle. *Send to slot* écrit dans un emplacement 97–128 (l'Evolver le garde en
+  mémoire : en mode Live l'envoi se fait à la fin de chaque geste, pas en continu). *Play on* sélectionne
+  l'emplacement sur l'OSC 3 ou 4.
 - **Patches :** nom (16 caractères ASCII), lecture/écriture banque + programme (l'écriture demande confirmation),
   import/export `.syx`, bibliothèque locale avec recherche, tags et favoris.
 - **Setup :** chemin MIDI, intervalle d'envoi, option *renvoyer le patch au chargement du set*.

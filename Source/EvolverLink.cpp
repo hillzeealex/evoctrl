@@ -142,6 +142,17 @@ void EvolverLink::handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiM
     if (m.isMidiClock() || m.isActiveSense())
         return;
     log ("IN ", m.getRawData(), m.getRawDataSize());
+
+    if (m.isProgramChange()) // the Evolver sends one when a program is selected on it (MIDI Xmit ALL or pro, p.17)
+    {
+        {
+            std::lock_guard lock (receivedLock);
+            received.push_back ({ evo::Parsed::Kind::ProgramChange, 0, m.getProgramChangeNumber() });
+        }
+        if (onReceived)
+            onReceived();
+        return;
+    }
     if (! m.isSysEx())
         return;
 

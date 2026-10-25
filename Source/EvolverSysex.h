@@ -25,7 +25,8 @@ struct Patch
 namespace cmd
 {
     constexpr uint8_t programParam = 0x01, programDump = 0x02, editBufferDump = 0x03, requestProgram = 0x05,
-                      requestEditBuffer = 0x06, seqParam = 0x08, requestName = 0x10, nameDump = 0x11;
+                      requestEditBuffer = 0x06, seqParam = 0x08, requestMain = 0x0E, mainDump = 0x0F,
+                      requestName = 0x10, nameDump = 0x11;
 }
 
 constexpr int packedPatchSize = 220;
@@ -73,6 +74,7 @@ inline Bytes nibbleMessage (uint8_t command, int index, int value)
 inline Bytes programParam (int index, int value) { return nibbleMessage (cmd::programParam, index, value); }
 inline Bytes seqParam (int step, int value)      { return nibbleMessage (cmd::seqParam, step, value); }
 inline Bytes requestEditBuffer()                 { auto b = header (cmd::requestEditBuffer); return end (b); }
+inline Bytes requestMainParams()                 { auto b = header (cmd::requestMain); return end (b); }  // p.51
 
 inline Bytes bankProgMessage (uint8_t command, int bank, int prog)
 {
@@ -112,8 +114,9 @@ inline Bytes nameDump (int bank, int prog, const std::string& name)
 
 struct Parsed
 {
-    enum class Kind { ProgramParam, SeqParam, EditBuffer, Program, Name } kind;
-    int index = 0, value = 0;  // param/step number + value, or bank + program for dumps/names
+    // Main = Main Parameter dump (current bank + program); ProgramChange = MIDI program change from the Evolver.
+    enum class Kind { ProgramParam, SeqParam, EditBuffer, Program, Name, Main, ProgramChange } kind;
+    int index = 0, value = 0;  // param/step number + value, or bank + program for dumps/names/main
     Patch patch {};
     std::string name;
 };
@@ -150,6 +153,10 @@ inline std::optional<Parsed> parse (const uint8_t* d, size_t n)
         case cmd::programDump:
             if (n != (size_t) packedPatchSize + 2) return std::nullopt;
             return Parsed { Parsed::Kind::Program, d[0], d[1], patchFromPacked (d + 2) };
+        case cmd::mainDump:
+            // 16 main params as LS/MS nibble pairs (p.48, p.53): #0 = program 0-127, #1 = bank 0-3.
+            if (n != 32) return std::nullopt;
+            return Parsed { Parsed::Kind::Main, (d[2] | (d[3] << 4)) & 0x03, (d[0] | (d[1] << 4)) & 0x7F };
         case cmd::nameDump:
         {
             if (n != (size_t) nameLength + 2) return std::nullopt;

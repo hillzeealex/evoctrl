@@ -52,6 +52,14 @@ int main()
     r = parse (nd.data(), nd.size());
     assert (r && r->kind == Parsed::Kind::Name && r->name == "Bass");
 
+    // Main Parameter dump: param 0 = program, param 1 = bank, LS then MS nibble.
+    Bytes main { 0x01, 0x20, 0x01, 0x0F };
+    const uint8_t mainValues[16] = { 66, 2 };
+    for (auto v : mainValues) { main.push_back (v & 0x0F); main.push_back (v >> 4); }
+    r = parse (main.data(), main.size());
+    assert (r && r->kind == Parsed::Kind::Main && r->value == 66 && r->index == 2);
+    assert (requestMainParams() == (Bytes { 0xF0, 0x01, 0x20, 0x01, 0x0E, 0xF7 }));
+
     // Rejects foreign / truncated messages.
     const Bytes foreign { 0x01, 0x21, 0x01, 0x01, 0, 0, 0 };
     assert (! parse (foreign.data(), foreign.size()));

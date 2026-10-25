@@ -92,6 +92,7 @@ void EvoCtrlProcessor::requestEditBuffer (bool apply)
 
     pendingTest = true;
     applyNextEditBuffer = apply;
+    link.queueSysex (evo::requestMainParams()); // current bank/program, then its name (see K::Main)
     link.queueSysex (evo::requestEditBuffer());
     setStatus (StatusKind::Warning, "Waiting for the Evolver...");
     startTimer (2000);
@@ -179,6 +180,18 @@ void EvoCtrlProcessor::handleAsyncUpdate()
                     applyPatch (m.patch, true); // so the Evolver plays what the editor shows
                     setStatus (StatusKind::Ok, "Program B" + juce::String (bank + 1) + " P" + juce::String (program + 1) + " loaded");
                 }
+                break;
+
+            case K::Main:
+                bank = m.index;
+                program = m.value;
+                link.queueSysex (evo::requestName (bank, program));
+                ++changeCounter;
+                break;
+
+            case K::ProgramChange: // program picked on the Evolver: its edit buffer now holds it
+                patchName.clear();
+                requestEditBuffer (true);
                 break;
 
             case K::Name:

@@ -87,7 +87,8 @@ Valeurs « nibble » : `valeur = ls | (ms << 4)` (ex. 198 → `06 0C`).
 
 | Fonction | Message |
 |---|---|
-| Test / Get from Evolver | envoie `0x06`, attend `0x03` |
+| Test / Get from Evolver | envoie `0x0E` + `0x06`, attend `0x0F` (banque/programme courants, Main params #1/#0, p.53) + `0x03`, puis demande le nom (`0x10`) |
+| Programme changé sur l'Evolver | Program Change reçu (émis si *MIDI Xmit* = ALL ou pro, p.17) → même séquence que Get. ⚠ L'émission d'un Bank Select (CC 32) par l'Evolver n'est pas documentée : la banque vient de `0x0F`. |
 | Send to Evolver | envoie `0x03` (edit buffer complet) |
 | Édition temps réel | `0x01` (paramètre) / `0x08` (pas de séquence) |
 | Lire banque+programme | `0x05` (+ `0x10` pour le nom) → réception `0x02` (+ `0x11`) |

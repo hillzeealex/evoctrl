@@ -144,7 +144,9 @@ private:
     bool settingHarmonics = false;
     std::vector<std::unique_ptr<juce::TextButton>> presetButtons, toolButtons;
     juce::TextButton importBtn { "IMPORT WAV..." }, romBtn { "ROM 1-96" }, userBtn { "USER 97-128" },
-                     readBtn { "READ ALL" }, sendBtn, saveBtn { "SAVE TO LIBRARY" }, auditionBtn { "PLAY ON" };
+                     readBtn { "READ ALL" }, sendBtn, restoreBtn { "RESTORE ORIGINAL" }, factoryBtn { "FACTORY DEFAULT" },
+                     saveBtn { "SAVE TO LIBRARY" },
+                     auditionBtn { "PLAY ON" };
     juce::ComboBox oscBox;
     juce::ToggleButton liveToggle { "Live: send at the end of each stroke" };
     juce::Label progress;

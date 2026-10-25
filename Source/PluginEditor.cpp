@@ -992,6 +992,42 @@ WavesPage::WavesPage (EvoCtrlProcessor& p) : proc (p)
             });
     };
 
+    restoreBtn.setTooltip ("Put back the wave this slot held before EvoCtrl first changed it (kept in Documents/EvoCtrl/Waves/originals.syx)");
+    restoreBtn.onClick = [this]
+    {
+        juce::AlertWindow::showAsync (
+            juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::QuestionIcon, "Restore the original wave",
+                "Put the original wave " + juce::String (selectedSlot + 1) + " back on the Evolver? The current version of that slot is replaced "
+                "(use Save to library first to keep it).", "Restore", "Cancel", this),
+            [safe = SafePointer<WavesPage> (this), slot = selectedSlot] (int result)
+            {
+                if (safe == nullptr || result != 1)
+                    return;
+                safe->proc.restoreOriginal (slot);
+                if (const auto& w = safe->proc.waves[(size_t) slot])
+                    safe->setWave (*w);
+            });
+    };
+    // Manual p.24: "The Evolver ships with waves 97 - 128 the same as 1 - 32".
+    factoryBtn.setTooltip ("Put back the factory content of this user wave: a copy of ROM wave (number - 96)");
+    factoryBtn.onClick = [this]
+    {
+        const int rom = selectedSlot - evo::firstUserWave;
+        if (! proc.waves[(size_t) rom])
+            return showAlert (this, "Factory default", "ROM wave " + juce::String (rom + 1) + " has not been read yet: press READ ALL first.");
+        juce::AlertWindow::showAsync (
+            juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::QuestionIcon, "Factory default",
+                "Reset wave " + juce::String (selectedSlot + 1) + " to its factory content (a copy of ROM wave " + juce::String (rom + 1)
+                + ")? The current version of that slot is replaced.", "Reset", "Cancel", this),
+            [safe = SafePointer<WavesPage> (this), slot = selectedSlot, rom] (int result)
+            {
+                if (safe == nullptr || result != 1 || ! safe->proc.waves[(size_t) rom])
+                    return;
+                const auto factory = *safe->proc.waves[(size_t) rom];
+                safe->proc.sendWave (slot, factory);
+                safe->setWave (factory);
+            });
+    };
     saveBtn.setTooltip ("Save the edited wave as a .syx file in Documents/EvoCtrl/Waves");
     saveBtn.onClick = [this]
     {
@@ -1045,7 +1081,7 @@ WavesPage::WavesPage (EvoCtrlProcessor& p) : proc (p)
     tilesView.setScrollBarsShown (true, false);
 
     for (juce::Component* c : std::initializer_list<juce::Component*> {
-             &importBtn, &romBtn, &userBtn, &readBtn, &sendBtn, &saveBtn, &auditionBtn, &oscBox, &liveToggle, &progress, &tilesView })
+             &importBtn, &romBtn, &userBtn, &readBtn, &sendBtn, &restoreBtn, &factoryBtn, &saveBtn, &auditionBtn, &oscBox, &liveToggle, &progress, &tilesView })
         addAndMakeVisible (c);
     refresh();
 }
@@ -1146,10 +1182,14 @@ void WavesPage::refresh()
         const bool isSlot = i == selectedSlot;
         t.selected = isSlot || i == loadedFrom;
         t.label = i == osc3 ? juce::String ("OSC 3") : i == osc4 ? juce::String ("OSC 4")
-                : i < evo::firstUserWave ? juce::String ("ROM") : isSlot ? juce::String ("EDIT") : w ? juce::String ("USER") : juce::String ("EMPTY");
+                : i < evo::firstUserWave ? juce::String ("ROM") : isSlot ? juce::String ("EDIT")
+                : proc.isModified (i) ? juce::String ("MODIFIED") : w ? juce::String ("USER") : juce::String ("EMPTY");
         t.repaint();
     }
     sendBtn.setButtonText ("STORE AS WAVE " + juce::String (selectedSlot + 1));
+    restoreBtn.setEnabled (proc.isModified (selectedSlot));
+    const auto& factory = proc.waves[(size_t) (selectedSlot - evo::firstUserWave)];
+    factoryBtn.setEnabled (! factory || ! proc.waves[(size_t) selectedSlot] || *factory != *proc.waves[(size_t) selectedSlot]);
     progress.setText (proc.readingWaves() ? proc.status.text
                                           : juce::String (proc.wavesKnown()) + " / 128 read  ·  one list for all 4 banks: wave 97 is the same in every program",
                       juce::dontSendNotification);
@@ -1225,6 +1265,10 @@ void WavesPage::resized()
     auto bottom = l.removeFromBottom (34);
     saveBtn.setBounds (bottom.removeFromRight (140));
     sendBtn.setBounds (bottom.withTrimmedRight (6));
+    l.removeFromBottom (6);
+    auto resets = l.removeFromBottom (28);
+    restoreBtn.setBounds (resets.removeFromLeft (resets.getWidth() / 2).withTrimmedRight (3));
+    factoryBtn.setBounds (resets.withTrimmedLeft (3));
     l.removeFromBottom (pad);
     auto readRow = l.removeFromBottom (26);
     readBtn.setBounds (readRow.removeFromLeft (100));

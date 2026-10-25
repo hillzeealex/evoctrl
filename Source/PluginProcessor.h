@@ -51,6 +51,10 @@ public:
     void sendWave (int num, const evo::Waveshape&);     // num 96-127 only (stored by the Evolver)
     bool readingWaves() const { return waveNext >= 0; }
     int wavesKnown() const;
+    // The user waves (97-128) as they were before EvoCtrl first wrote to them, kept for good in originals.syx.
+    std::array<std::optional<evo::Waveshape>, evo::numWaves - evo::firstUserWave> originals;
+    bool isModified (int num) const;
+    void restoreOriginal (int num);
     static juce::File wavesFolder();
 
     // --- juce::AudioProcessor
@@ -82,6 +86,7 @@ private:
     void setParamFromDevice (int index, int value);
     void requestNextWave();
     void saveWaveCache() const;
+    void recordOriginals();
 
     std::array<juce::AudioParameterInt*, evo::numParams> params {};
     std::array<std::atomic<int>, evo::numParams> lastValue {};   // last value known on both sides: anti-echo + dedupe

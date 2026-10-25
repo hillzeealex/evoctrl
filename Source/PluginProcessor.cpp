@@ -23,6 +23,11 @@ EvoCtrlProcessor::EvoCtrlProcessor()
     for (const auto& m : PatchLibrary::readSyx (wavesFolder().getChildFile ("evolver-cache.syx")))
         if (m.kind == evo::Parsed::Kind::Waveshape && m.index < evo::numWaves)
             waves[(size_t) m.index] = m.wave;
+    for (const auto& m : PatchLibrary::readSyx (wavesFolder().getChildFile ("originals.syx")))
+        if (m.kind == evo::Parsed::Kind::Waveshape && m.index >= evo::firstUserWave && m.index < evo::numWaves)
+            originals[(size_t) (m.index - evo::firstUserWave)] = m.wave;
+    recordOriginals();   // first run: whatever was read from the Evolver before any edit
+
     waveWatchdog.fn = [this]   // no answer: ask once more, then skip that wave
     {
         if (std::exchange (waveRetried, ! waveRetried))
@@ -217,6 +222,7 @@ void EvoCtrlProcessor::handleAsyncUpdate()
                 if (m.index < evo::numWaves)
                 {
                     waves[(size_t) m.index] = m.wave;
+                    recordOriginals();
                     if (m.index == waveNext)
                     {
                         ++waveNext;
@@ -289,10 +295,52 @@ void EvoCtrlProcessor::sendWave (int num, const evo::Waveshape& w)
         return;
     if (! link.hasOutput())
         return setStatus (StatusKind::Error, "No MIDI output open");
+    recordOriginals();   // keep what was there before this first write
     link.queueSysex (evo::waveshapeDump (num, w));
     waves[(size_t) num] = w;
     saveWaveCache();
     setStatus (StatusKind::Ok, "Waveshape " + juce::String (num + 1) + " sent to the Evolver");
+}
+
+// Records each user wave the first time its content is known; never overwritten afterwards.
+void EvoCtrlProcessor::recordOriginals()
+{
+    bool added = false;
+    for (int num = evo::firstUserWave; num < evo::numWaves; ++num)
+    {
+        auto& o = originals[(size_t) (num - evo::firstUserWave)];
+        if (! o && waves[(size_t) num])
+        {
+            o = waves[(size_t) num];
+            added = true;
+        }
+    }
+    if (! added)
+        return;
+    evo::Bytes all;
+    for (int num = evo::firstUserWave; num < evo::numWaves; ++num)
+        if (const auto& o = originals[(size_t) (num - evo::firstUserWave)])
+        {
+            const auto d = evo::waveshapeDump (num, *o);
+            all.insert (all.end(), d.begin(), d.end());
+        }
+    wavesFolder().createDirectory();
+    PatchLibrary::writeSyx (wavesFolder().getChildFile ("originals.syx"), all);
+}
+
+bool EvoCtrlProcessor::isModified (int num) const
+{
+    if (num < evo::firstUserWave || num >= evo::numWaves)
+        return false;
+    const auto& o = originals[(size_t) (num - evo::firstUserWave)];
+    return o && waves[(size_t) num] && *o != *waves[(size_t) num];
+}
+
+void EvoCtrlProcessor::restoreOriginal (int num)
+{
+    if (num >= evo::firstUserWave && num < evo::numWaves)
+        if (const auto& o = originals[(size_t) (num - evo::firstUserWave)])
+            sendWave (num, *o);
 }
 
 void EvoCtrlProcessor::saveWaveCache() const
